@@ -554,11 +554,13 @@ class Post:
             }
         return None
 
-    def _obtain_metadata_from_opengraph(self) -> Optional[Dict[str, Any]]:
+    def _obtain_metadata_from_opengraph(self, diag: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """Fallback: extract post metadata from OpenGraph/Twitter meta tags served to link crawlers."""
         try:
             raw_html = self._context.get_crawler_html(f"p/{self.shortcode}/")
-        except (InstaloaderException, KeyError, ValueError, TypeError):
+        except (InstaloaderException, KeyError, ValueError, TypeError) as err:
+            if diag is not None:
+                diag.append(f"og_err={err}")
             return None
 
         metas: Dict[str, str] = {}
@@ -571,6 +573,10 @@ class Post:
 
         display_url = metas.get("og:image") or metas.get("twitter:image")
         if not display_url:
+            if diag is not None:
+                title_m = re.search(r"<title[^>]*>(.*?)</title>", raw_html, re.DOTALL | re.IGNORECASE)
+                page_title = title_m.group(1).strip()[:80] if title_m else "no-title"
+                diag.append(f"og_no_img(len={len(raw_html)},metas={list(metas.keys())[:8]},title={page_title!r})")
             return None
 
         video_url = metas.get("og:video:secure_url") or metas.get("og:video")
@@ -644,8 +650,9 @@ class Post:
 
     def _obtain_metadata(self):
         if not self._full_metadata_dict:
+            diag: List[str] = []
             items = None
-            with suppress(InstaloaderException, KeyError, ValueError, TypeError):
+            try:
                 resp = self._context.doc_id_graphql_query(
                     "27128499623469141",
                     {
@@ -657,16 +664,21 @@ class Post:
                 )
                 web_info = (resp.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
                 items = web_info.get("items")
+                if not items:
+                    diag.append(f"gql_empty(keys={list((resp.get('data') or {}).keys())})")
+            except (InstaloaderException, KeyError, ValueError, TypeError) as err:
+                diag.append(f"gql_err={err}")
             if items:
                 self._full_metadata_dict = Post._normalize_post_data(items[0])
             else:
                 self._full_metadata_dict = (
                     self._obtain_metadata_from_page()
                     or self._obtain_metadata_from_embed()
-                    or self._obtain_metadata_from_opengraph()
+                    or self._obtain_metadata_from_opengraph(diag=diag)
                 )
             if not self._full_metadata_dict:
-                raise BadResponseException("Fetching Post metadata failed.")
+                detail = "; ".join(diag) if diag else "all fallbacks returned None"
+                raise BadResponseException(f"Fetching Post metadata failed ({detail}).")
             if self.shortcode != self._full_metadata_dict['shortcode']:
                 self._node.update(self._full_metadata_dict)
                 raise PostChangedException

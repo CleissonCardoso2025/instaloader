@@ -887,14 +887,17 @@ class InstaloaderContext:
 
     def get_crawler_html(self, path: str) -> str:
         """Fetch an Instagram page using link-preview crawler User-Agents that bypass VPS login walls."""
-        self.do_sleep()
-        self._rate_controller.wait_before_query('other')
         url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
         crawler_agents = (
-            'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
             'TelegramBot (like TwitterBot)',
+            'Discordbot/2.0; +https://discordapp.com',
+            'WhatsApp/2.23.20.0',
+            'Twitterbot/1.0',
+            'Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)',
+            'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
         )
-        last_error: Optional[Exception] = None
+        diag_notes: List[str] = []
+        last_html = ''
         for agent in crawler_agents:
             headers = {
                 'User-Agent': agent,
@@ -906,36 +909,73 @@ class InstaloaderContext:
                     resp = crawler_session.get(url, headers=headers, timeout=self.request_timeout)
                 if resp.status_code == 404:
                     raise QueryReturnedNotFoundException(self._response_error(resp))
+                has_meta = (
+                    'og:image' in resp.text
+                    or 'twitter:image' in resp.text
+                    or 'xig_polaris_media' in resp.text
+                )
+                diag_notes.append(
+                    f"{agent.split('/', maxsplit=1)[0]}:{resp.status_code}:len={len(resp.text)}:meta={has_meta}"
+                )
                 if resp.status_code == 200 and '/accounts/login' not in resp.url:
-                    return resp.text
+                    last_html = resp.text
+                    if has_meta:
+                        return resp.text
             except requests.exceptions.RequestException as err:
-                last_error = err
-        raise ConnectionException("Crawler request to {} failed: {}".format(url, last_error))
+                diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
+        if last_html:
+            return last_html
+        raise ConnectionException("Crawler request to {} failed ({})".format(url, ", ".join(diag_notes)))
 
     def get_embed_html(self, shortcode: str) -> str:
         """Fetch the public embed/captioned HTML page for a post or reel shortcode."""
-        self.do_sleep()
-        self._rate_controller.wait_before_query('other')
-        url = 'https://www.instagram.com/p/{0}/embed/captioned/'.format(shortcode)
-        headers = {
-            'User-Agent': self.user_agent,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.instagram.com/',
-            'Sec-Fetch-Dest': 'iframe',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'cross-site',
-        }
-        try:
-            with requests.Session() as clean_session:
-                resp = clean_session.get(url, headers=headers, timeout=self.request_timeout)
-        except requests.exceptions.RequestException as err:
-            raise ConnectionException("Embed request to {}: {}".format(url, err)) from err
-        if resp.status_code == 404:
-            raise QueryReturnedNotFoundException(self._response_error(resp))
-        if resp.status_code != 200:
-            raise ConnectionException(self._response_error(resp))
-        return resp.text
+        urls = (
+            'https://www.instagram.com/p/{0}/embed/captioned/'.format(shortcode),
+            'https://www.instagram.com/reel/{0}/embed/captioned/'.format(shortcode),
+            'https://www.instagram.com/p/{0}/embed/'.format(shortcode),
+        )
+        agents = (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 '
+            '(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
+            'TelegramBot (like TwitterBot)',
+        )
+        last_html = ''
+        diag_notes: List[str] = []
+        for url in urls:
+            for agent in agents:
+                headers = {
+                    'User-Agent': agent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Referer': 'https://www.instagram.com/',
+                    'Sec-Fetch-Dest': 'iframe',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'cross-site',
+                }
+                try:
+                    with requests.Session() as clean_session:
+                        resp = clean_session.get(url, headers=headers, timeout=self.request_timeout)
+                    if resp.status_code == 404:
+                        raise QueryReturnedNotFoundException(self._response_error(resp))
+                    has_embed = (
+                        'contextJSON' in resp.text
+                        or 'EmbeddedMediaImage' in resp.text
+                        or 'shortcode_media' in resp.text
+                    )
+                    diag_notes.append(f"{resp.status_code}:len={len(resp.text)}:embed={has_embed}")
+                    if resp.status_code == 200:
+                        last_html = resp.text
+                        if has_embed:
+                            return resp.text
+                except requests.exceptions.RequestException as err:
+                    diag_notes.append(f"err={err}")
+            if last_html:
+                break
+        if last_html:
+            return last_html
+        raise ConnectionException("Embed request failed ({})".format(", ".join(diag_notes)))
 
     def write_raw(self, resp: Union[bytes, requests.Response], filename: str) -> None:
         """Write raw response data into a file.
