@@ -840,13 +840,58 @@ class InstaloaderContext:
         :raises QueryReturnedNotFoundException: When the server responds with a 404.
         :raises ConnectionException: When the request failed.
         """
-        with self.get_anonymous_session() as anonymous_session:
-            html = self._get_page(anonymous_session, path)
+        def _extract_from_html(raw_html: str) -> List[Dict[str, Any]]:
+            extracted: List[Dict[str, Any]] = []
+            for script in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', raw_html, re.DOTALL):
+                with suppress(json.decoder.JSONDecodeError):
+                    extracted.extend(_embedded_query_data(json.loads(script.group(1))))
+            return extracted
+
         data: List[Dict[str, Any]] = []
-        for script in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL):
-            with suppress(json.decoder.JSONDecodeError):
-                data.extend(_embedded_query_data(json.loads(script.group(1))))
+        try:
+            with self.get_anonymous_session() as anonymous_session:
+                html = self._get_page(anonymous_session, path)
+            data = _extract_from_html(html)
+        except (LoginRequiredException, ConnectionException):
+            data = []
+
+        if not data:
+            # Fallback with a clean browser navigation session (no x-ig-app-id or empty sessionid cookies)
+            with requests.Session() as clean_session:
+                clean_session.headers.update({
+                    'User-Agent': self.user_agent,
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Sec-Fetch-Dest': 'document',
+                    'Sec-Fetch-Mode': 'navigate',
+                    'Sec-Fetch-Site': 'none',
+                    'Upgrade-Insecure-Requests': '1',
+                })
+                clean_session.request = partial(clean_session.request, timeout=self.request_timeout)  # type: ignore
+                html = self._get_page(clean_session, path)
+                data = _extract_from_html(html)
         return data
+
+    def get_embed_html(self, shortcode: str) -> str:
+        """Fetch the public embed/captioned HTML page for a post or reel shortcode."""
+        self.do_sleep()
+        self._rate_controller.wait_before_query('other')
+        url = 'https://www.instagram.com/p/{0}/embed/captioned/'.format(shortcode)
+        headers = {
+            'User-Agent': self.user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        try:
+            with requests.Session() as clean_session:
+                resp = clean_session.get(url, headers=headers, timeout=self.request_timeout)
+        except requests.exceptions.RequestException as err:
+            raise ConnectionException("Embed request to {}: {}".format(url, err)) from err
+        if resp.status_code == 404:
+            raise QueryReturnedNotFoundException(self._response_error(resp))
+        if resp.status_code != 200:
+            raise ConnectionException(self._response_error(resp))
+        return resp.text
 
     def write_raw(self, resp: Union[bytes, requests.Response], filename: str) -> None:
         """Write raw response data into a file.

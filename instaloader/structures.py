@@ -1,3 +1,4 @@
+import html as html_lib
 import json
 import lzma
 import re
@@ -286,6 +287,15 @@ class Post:
         typename = None
         if isinstance(media_type, int):
             typename = media_types.get(media_type)
+        elif media.get("__typename") in ("XIGPolarisVideoMedia", "GraphVideo"):
+            typename = "GraphVideo"
+            media_type = 2
+        elif media.get("__typename") in ("XIGPolarisSidecarMedia", "GraphSidecar"):
+            typename = "GraphSidecar"
+            media_type = 8
+        elif media.get("__typename") in ("XIGPolarisImageMedia", "GraphImage"):
+            typename = "GraphImage"
+            media_type = 1
         if not typename:
             raise BadResponseException(f"Unknown media_type in metadata: {media_type}.")
         pic_json: Dict[str, Any] = media.copy()
@@ -293,14 +303,22 @@ class Post:
         pic_json["id"] = media["pk"]
         pic_json["__typename"] = typename
         pic_json["is_video"] = media_type == 2
-        pic_json["taken_at_timestamp"] = media["taken_at"]
+        taken_at = media.get("taken_at") or media.get("taken_at_timestamp")
+        if taken_at is None and media.get("pk"):
+            taken_at = ((int(media["pk"]) >> 23) + 1314220021721) // 1000
+        pic_json["taken_at_timestamp"] = taken_at or 0
+        user_dict = media.get("user") or {}
         pic_json["owner"] = {
-            "id": media["user"]["pk"],
-            "username": media["user"].get("username", ""),
-            "full_name": media["user"].get("full_name", ""),
+            "id": user_dict.get("pk") or user_dict.get("id") or "0",
+            "username": user_dict.get("username", ""),
+            "full_name": user_dict.get("full_name", ""),
         }
         candidates = (media.get("image_versions2") or {}).get("candidates") or []
-        pic_json["display_url"] = candidates[0]["url"] if candidates else None
+        pic_json["display_url"] = (
+            candidates[0]["url"]
+            if candidates
+            else (media.get("display_uri") or media.get("display_url"))
+        )
         video_versions = media.get("video_versions") or []
         pic_json["video_url"] = video_versions[0]["url"] if video_versions else None
         pic_json["video_duration"] = media.get("video_duration")
@@ -330,7 +348,11 @@ class Post:
                     "is_video": item_type == 2,
                 }
                 item_candidates = (item.get("image_versions2") or {}).get("candidates") or []
-                node["display_url"] = item_candidates[0]["url"] if item_candidates else ""
+                node["display_url"] = (
+                    item_candidates[0]["url"]
+                    if item_candidates
+                    else (item.get("display_uri") or item.get("display_url") or "")
+                )
                 item_videos = item.get("video_versions") or []
                 node["video_url"] = item_videos[0]["url"] if item_videos else None
                 if item.get("accessibility_caption") is not None:
@@ -407,22 +429,150 @@ class Post:
     def __hash__(self) -> int:
         return hash(self.shortcode)
 
+    def _obtain_metadata_from_page(self) -> Optional[Dict[str, Any]]:
+        """Fallback: extract post metadata from embedded JSON in the public post page HTML."""
+        try:
+            page_list = self._context.get_page_data(f"p/{self.shortcode}/")
+        except (InstaloaderException, KeyError, ValueError, TypeError):
+            return None
+        for data in page_list:
+            if not isinstance(data, dict):
+                continue
+            web_info = data.get("xdt_api__v1__media__shortcode__web_info")
+            if isinstance(web_info, dict) and web_info.get("items"):
+                return Post._normalize_post_data(web_info["items"][0])
+            pm = data.get("xig_polaris_media")
+            if isinstance(pm, dict):
+                media = pm.get("if_not_gated_logged_out")
+                if isinstance(media, dict) and (media.get("pk") or pm.get("pk")):
+                    merged = dict(pm, **media)
+                    merged.setdefault("pk", pm.get("pk"))
+                    merged.setdefault("code", pm.get("code") or self.shortcode)
+                    normalized = Post._normalize_post_data(merged)
+                    comm_edges = (pm.get("comments_connection") or {}).get("edges") or []
+                    if comm_edges and "preview_comments" not in normalized:
+                        normalized["preview_comments"] = [
+                            edge["node"]
+                            for edge in comm_edges
+                            if isinstance(edge, dict) and isinstance(edge.get("node"), dict)
+                        ]
+                    return normalized
+        return None
+
+    @staticmethod
+    def _extract_caption_from_embed_html(raw_html: str) -> Optional[str]:
+        """Extract plain-text caption from Instagram embed HTML."""
+        cap_match = re.search(r'<div class="Caption"[^>]*>(.*?)</div>', raw_html, re.DOTALL)
+        if not cap_match:
+            return None
+        cap_html = cap_match.group(1)
+        cap_html = re.sub(r'<a class="CaptionUsername"[^>]*>.*?</a>', '', cap_html, flags=re.DOTALL)
+        cap_html = re.sub(r'<div class="CaptionComments"[^>]*>.*', '', cap_html, flags=re.DOTALL)
+        cap_html = re.sub(r'<br\s*/?>', '\n', cap_html, flags=re.IGNORECASE)
+        cap_html = re.sub(r'<[^>]+>', '', cap_html)
+        text = html_lib.unescape(cap_html).strip()
+        return text or None
+
+    def _obtain_metadata_from_embed(self) -> Optional[Dict[str, Any]]:
+        """Fallback: extract post metadata from /p/<shortcode>/embed/captioned/."""
+        try:
+            raw_html = self._context.get_embed_html(self.shortcode)
+        except (InstaloaderException, KeyError, ValueError, TypeError):
+            return None
+
+        ctx_match = re.search(r'"contextJSON":("(?:\\.|[^"\\])*")', raw_html)
+        if ctx_match:
+            with suppress(json.decoder.JSONDecodeError, KeyError, TypeError, ValueError):
+                ctx_str = json.loads(ctx_match.group(1))
+                ctx = json.loads(ctx_str)
+                gql_data = ctx.get("gql_data") or {}
+                sm = gql_data.get("shortcode_media") or gql_data.get("xdt_shortcode_media")
+                if isinstance(sm, dict):
+                    node = sm.copy()
+                    media_id = int(node.get("id") or Post.shortcode_to_mediaid(self.shortcode))
+                    node["id"] = str(media_id)
+                    node["shortcode"] = node.get("shortcode") or self.shortcode
+                    is_video = bool(node.get("is_video"))
+                    node["is_video"] = is_video
+                    node["__typename"] = node.get("__typename") or (
+                        "GraphVideo" if is_video else "GraphImage"
+                    )
+                    if not node.get("taken_at_timestamp") and not node.get("date"):
+                        node["taken_at_timestamp"] = ((media_id >> 23) + 1314220021721) // 1000
+                    if "edge_media_preview_like" not in node:
+                        node["edge_media_preview_like"] = node.get("edge_liked_by") or {"count": 0}
+                    if "edge_media_to_parent_comment" not in node:
+                        node["edge_media_to_parent_comment"] = (
+                            node.get("edge_media_to_comment") or {"count": 0, "edges": []}
+                        )
+                    cap_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
+                    if not cap_edges:
+                        html_cap = Post._extract_caption_from_embed_html(raw_html)
+                        node["edge_media_to_caption"] = (
+                            {"edges": [{"node": {"text": html_cap}}]}
+                            if html_cap
+                            else {"edges": []}
+                        )
+                    owner = node.get("owner") or {}
+                    node["owner"] = {
+                        "id": str(owner.get("id") or owner.get("pk") or "0"),
+                        "username": owner.get("username") or "",
+                        "full_name": owner.get("full_name") or "",
+                    }
+                    return node
+
+        # HTML-only embed fallback
+        img_match = re.search(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"', raw_html)
+        if img_match:
+            display_url = html_lib.unescape(img_match.group(1))
+            user_match = re.search(r'class="UsernameText"[^>]*>([^<]+)<', raw_html)
+            username = html_lib.unescape(user_match.group(1)).strip() if user_match else ""
+            caption_text = Post._extract_caption_from_embed_html(raw_html)
+            media_id = Post.shortcode_to_mediaid(self.shortcode)
+            taken_at = ((media_id >> 23) + 1314220021721) // 1000
+            return {
+                "id": str(media_id),
+                "shortcode": self.shortcode,
+                "__typename": "GraphImage",
+                "is_video": False,
+                "taken_at_timestamp": taken_at,
+                "display_url": display_url,
+                "video_url": None,
+                "owner": {"id": "0", "username": username, "full_name": ""},
+                "edge_media_to_caption": (
+                    {"edges": [{"node": {"text": caption_text}}]}
+                    if caption_text
+                    else {"edges": []}
+                ),
+                "edge_media_preview_like": {"count": 0},
+                "edge_media_to_parent_comment": {"count": 0, "edges": []},
+            }
+        return None
+
     def _obtain_metadata(self):
         if not self._full_metadata_dict:
-            resp = self._context.doc_id_graphql_query(
-                "27128499623469141",
-                {
-                    "shortcode": self.shortcode,
-                    "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
-                },
-                # As the logged-out web app does.
-                web_api=not self._context.is_logged_in,
-            )
-            web_info = (resp.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
-            items = web_info.get("items")
-            if not items:
+            items = None
+            with suppress(InstaloaderException, KeyError, ValueError, TypeError):
+                resp = self._context.doc_id_graphql_query(
+                    "27128499623469141",
+                    {
+                        "shortcode": self.shortcode,
+                        "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
+                    },
+                    # As the logged-out web app does.
+                    web_api=not self._context.is_logged_in,
+                )
+                web_info = (resp.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
+                items = web_info.get("items")
+            if items:
+                self._full_metadata_dict = Post._normalize_post_data(items[0])
+            else:
+                self._full_metadata_dict = (
+                    self._obtain_metadata_from_page()
+                    or self._obtain_metadata_from_embed()
+                )
+            if not self._full_metadata_dict:
                 raise BadResponseException("Fetching Post metadata failed.")
-            self._full_metadata_dict = Post._normalize_post_data(items[0])
             if self.shortcode != self._full_metadata_dict['shortcode']:
                 self._node.update(self._full_metadata_dict)
                 raise PostChangedException

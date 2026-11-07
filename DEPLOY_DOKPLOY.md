@@ -261,3 +261,4 @@ curl -X POST "http://instaloader.cleissoncardoso.com/api/v1/session/cookies" \
 curl -X POST "http://instaloader.cleissoncardoso.com/api/v1/session/reset" \
   -H "accept: application/json"
 ```
+
