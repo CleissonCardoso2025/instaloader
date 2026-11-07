@@ -857,20 +857,60 @@ class InstaloaderContext:
 
         if not data:
             # Fallback with a clean browser navigation session (no x-ig-app-id or empty sessionid cookies)
-            with requests.Session() as clean_session:
-                clean_session.headers.update({
-                    'User-Agent': self.user_agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Sec-Fetch-Dest': 'document',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'none',
-                    'Upgrade-Insecure-Requests': '1',
-                })
-                clean_session.request = partial(clean_session.request, timeout=self.request_timeout)  # type: ignore
-                html = self._get_page(clean_session, path)
+            try:
+                with requests.Session() as clean_session:
+                    clean_session.headers.update({
+                        'User-Agent': self.user_agent,
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                        'Accept-Language': 'en-US,en;q=0.9',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                        'Upgrade-Insecure-Requests': '1',
+                    })
+                    clean_session.request = partial(
+                        clean_session.request, timeout=self.request_timeout
+                    )  # type: ignore
+                    html = self._get_page(clean_session, path)
                 data = _extract_from_html(html)
+            except (LoginRequiredException, ConnectionException):
+                data = []
+
+        if not data:
+            # Fallback with crawler User-Agent (never redirected to login on VPS/datacenter IPs)
+            try:
+                crawler_html = self.get_crawler_html(path)
+                data = _extract_from_html(crawler_html)
+            except (LoginRequiredException, ConnectionException):
+                data = []
         return data
+
+    def get_crawler_html(self, path: str) -> str:
+        """Fetch an Instagram page using link-preview crawler User-Agents that bypass VPS login walls."""
+        self.do_sleep()
+        self._rate_controller.wait_before_query('other')
+        url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
+        crawler_agents = (
+            'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            'TelegramBot (like TwitterBot)',
+        )
+        last_error: Optional[Exception] = None
+        for agent in crawler_agents:
+            headers = {
+                'User-Agent': agent,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+            }
+            try:
+                with requests.Session() as crawler_session:
+                    resp = crawler_session.get(url, headers=headers, timeout=self.request_timeout)
+                if resp.status_code == 404:
+                    raise QueryReturnedNotFoundException(self._response_error(resp))
+                if resp.status_code == 200 and '/accounts/login' not in resp.url:
+                    return resp.text
+            except requests.exceptions.RequestException as err:
+                last_error = err
+        raise ConnectionException("Crawler request to {} failed: {}".format(url, last_error))
 
     def get_embed_html(self, shortcode: str) -> str:
         """Fetch the public embed/captioned HTML page for a post or reel shortcode."""
@@ -881,6 +921,10 @@ class InstaloaderContext:
             'User-Agent': self.user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.instagram.com/',
+            'Sec-Fetch-Dest': 'iframe',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'cross-site',
         }
         try:
             with requests.Session() as clean_session:

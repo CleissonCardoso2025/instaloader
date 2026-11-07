@@ -519,12 +519,17 @@ class Post:
                         "username": owner.get("username") or "",
                         "full_name": owner.get("full_name") or "",
                     }
+                    node.setdefault("video_url", None)
                     return node
 
         # HTML-only embed fallback
-        img_match = re.search(r'class="EmbeddedMediaImage"[^>]*src="([^"]+)"', raw_html)
+        img_match = re.search(
+            r'<img[^>]*class="EmbeddedMediaImage"[^>]*src="([^"]+)"'
+            r'|<img[^>]*src="([^"]+)"[^>]*class="EmbeddedMediaImage"',
+            raw_html,
+        )
         if img_match:
-            display_url = html_lib.unescape(img_match.group(1))
+            display_url = html_lib.unescape(img_match.group(1) or img_match.group(2))
             user_match = re.search(r'class="UsernameText"[^>]*>([^<]+)<', raw_html)
             username = html_lib.unescape(user_match.group(1)).strip() if user_match else ""
             caption_text = Post._extract_caption_from_embed_html(raw_html)
@@ -549,6 +554,94 @@ class Post:
             }
         return None
 
+    def _obtain_metadata_from_opengraph(self) -> Optional[Dict[str, Any]]:
+        """Fallback: extract post metadata from OpenGraph/Twitter meta tags served to link crawlers."""
+        try:
+            raw_html = self._context.get_crawler_html(f"p/{self.shortcode}/")
+        except (InstaloaderException, KeyError, ValueError, TypeError):
+            return None
+
+        metas: Dict[str, str] = {}
+        for match in re.finditer(r"<meta\s+[^>]+>", raw_html, re.IGNORECASE):
+            tag = match.group(0)
+            key_m = re.search(r'(?:property|name)="([^"]+)"', tag, re.IGNORECASE)
+            val_m = re.search(r'content="([^"]*)"', tag, re.IGNORECASE)
+            if key_m and val_m:
+                metas[key_m.group(1).lower()] = html_lib.unescape(val_m.group(1))
+
+        display_url = metas.get("og:image") or metas.get("twitter:image")
+        if not display_url:
+            return None
+
+        video_url = metas.get("og:video:secure_url") or metas.get("og:video")
+        og_url = metas.get("og:url") or ""
+        twitter_title = metas.get("twitter:title") or ""
+        og_title = metas.get("og:title") or ""
+        og_desc = metas.get("og:description") or metas.get("description") or ""
+
+        username = ""
+        full_name = ""
+        tw_match = re.search(r"^(.*?)\s*\(@([\w.]+)\)", twitter_title)
+        if tw_match:
+            full_name = tw_match.group(1).strip()
+            username = tw_match.group(2).strip()
+        if not username:
+            url_match = re.search(r"instagram\.com/([^/?#]+)/(?:p|reel|reels|tv)/", og_url)
+            if url_match and url_match.group(1) not in ("p", "reel", "reels", "tv", "stories"):
+                username = url_match.group(1)
+        if not username:
+            desc_user = re.search(r"-\s*@?([\w.]+)\s+on\s+", og_desc)
+            if desc_user:
+                username = desc_user.group(1)
+
+        caption_text: Optional[str] = None
+        title_cap = re.search(r'^.*?\b(?:on|no)\s+Instagram:\s*"(.*)"\s*$', og_title, re.DOTALL)
+        if title_cap:
+            caption_text = title_cap.group(1).strip()
+        elif og_desc:
+            desc_cap = re.search(
+                r'^\d[\d,.KMBkmb]*\s+likes?,\s*\d[\d,.KMBkmb]*\s+comments?\s*-\s*.*?:\s*"(.*)"\s*\.?\s*$',
+                og_desc,
+                re.DOTALL,
+            )
+            if desc_cap:
+                caption_text = desc_cap.group(1).strip()
+            else:
+                cleaned = re.sub(
+                    r"\s*-\s*@?[\w.]+\s+on\s+[A-Za-z]+\s+\d+,\s+\d{4}\s*$",
+                    "",
+                    og_desc,
+                    flags=re.DOTALL,
+                ).strip()
+                caption_text = cleaned or None
+
+        is_video = bool(
+            video_url
+            or "/reel/" in og_url
+            or "/tv/" in og_url
+            or "reel" in twitter_title.lower()
+            or "video" in twitter_title.lower()
+        )
+        media_id = Post.shortcode_to_mediaid(self.shortcode)
+        taken_at = ((media_id >> 23) + 1314220021721) // 1000
+        return {
+            "id": str(media_id),
+            "shortcode": self.shortcode,
+            "__typename": "GraphVideo" if is_video else "GraphImage",
+            "is_video": is_video,
+            "taken_at_timestamp": taken_at,
+            "display_url": display_url,
+            "video_url": video_url,
+            "owner": {"id": "0", "username": username, "full_name": full_name},
+            "edge_media_to_caption": (
+                {"edges": [{"node": {"text": caption_text}}]}
+                if caption_text
+                else {"edges": []}
+            ),
+            "edge_media_preview_like": {"count": 0},
+            "edge_media_to_parent_comment": {"count": 0, "edges": []},
+        }
+
     def _obtain_metadata(self):
         if not self._full_metadata_dict:
             items = None
@@ -570,6 +663,7 @@ class Post:
                 self._full_metadata_dict = (
                     self._obtain_metadata_from_page()
                     or self._obtain_metadata_from_embed()
+                    or self._obtain_metadata_from_opengraph()
                 )
             if not self._full_metadata_dict:
                 raise BadResponseException("Fetching Post metadata failed.")
@@ -801,7 +895,9 @@ class Post:
         if self.is_video:
             version_urls = []
             try:
-                version_urls.append(self._field('video_url'))
+                graphql_video_url = self._field('video_url')
+                if graphql_video_url:
+                    version_urls.append(graphql_video_url)
             except (InstaloaderException, KeyError, IndexError) as err:
                 self._context.error(f"Warning: Unable to fetch video from graphql of {self}: {err}")
             if self._context.iphone_support and self._context.is_logged_in:
