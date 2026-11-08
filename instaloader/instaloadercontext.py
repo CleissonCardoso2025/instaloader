@@ -848,12 +848,20 @@ class InstaloaderContext:
             return extracted
 
         data: List[Dict[str, Any]] = []
-        try:
-            with self.get_anonymous_session() as anonymous_session:
-                html = self._get_page(anonymous_session, path)
-            data = _extract_from_html(html)
-        except (LoginRequiredException, ConnectionException):
-            data = []
+        if os.environ.get('CF_WORKER_URL', '').strip():
+            try:
+                crawler_html = self.get_crawler_html(path)
+                data = _extract_from_html(crawler_html)
+            except (LoginRequiredException, ConnectionException):
+                data = []
+
+        if not data:
+            try:
+                with self.get_anonymous_session() as anonymous_session:
+                    html = self._get_page(anonymous_session, path)
+                data = _extract_from_html(html)
+            except (LoginRequiredException, ConnectionException):
+                data = []
 
         if not data:
             # Fallback with a clean browser navigation session (no x-ig-app-id or empty sessionid cookies)

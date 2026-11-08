@@ -1,6 +1,7 @@
 import html as html_lib
 import json
 import lzma
+import os
 import re
 from base64 import b64decode, b64encode
 from contextlib import suppress
@@ -678,31 +679,37 @@ class Post:
     def _obtain_metadata(self):
         if not self._full_metadata_dict:
             diag: List[str] = []
-            items = None
-            try:
-                resp = self._context.doc_id_graphql_query(
-                    "27128499623469141",
-                    {
-                        "shortcode": self.shortcode,
-                        "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
-                    },
-                    # As the logged-out web app does.
-                    web_api=not self._context.is_logged_in,
-                )
-                web_info = (resp.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
-                items = web_info.get("items")
-                if not items:
-                    diag.append(f"gql_empty(keys={list((resp.get('data') or {}).keys())})")
-            except (InstaloaderException, KeyError, ValueError, TypeError) as err:
-                diag.append(f"gql_err={err}")
-            if items:
-                self._full_metadata_dict = Post._normalize_post_data(items[0])
-            else:
+            if not self._context.is_logged_in and os.environ.get('CF_WORKER_URL', '').strip():
                 self._full_metadata_dict = (
                     self._obtain_metadata_from_embed(diag=diag)
-                    or self._obtain_metadata_from_page()
                     or self._obtain_metadata_from_opengraph(diag=diag)
                 )
+            if not self._full_metadata_dict:
+                items = None
+                try:
+                    resp = self._context.doc_id_graphql_query(
+                        "27128499623469141",
+                        {
+                            "shortcode": self.shortcode,
+                            "__relay_internal__pv__PolarisAIGMMediaWebLabelEnabledrelayprovider": False,
+                        },
+                        # As the logged-out web app does.
+                        web_api=not self._context.is_logged_in,
+                    )
+                    web_info = (resp.get("data") or {}).get("xdt_api__v1__media__shortcode__web_info") or {}
+                    items = web_info.get("items")
+                    if not items:
+                        diag.append(f"gql_empty(keys={list((resp.get('data') or {}).keys())})")
+                except (InstaloaderException, KeyError, ValueError, TypeError) as err:
+                    diag.append(f"gql_err={err}")
+                if items:
+                    self._full_metadata_dict = Post._normalize_post_data(items[0])
+                else:
+                    self._full_metadata_dict = (
+                        self._obtain_metadata_from_embed(diag=diag)
+                        or self._obtain_metadata_from_page()
+                        or self._obtain_metadata_from_opengraph(diag=diag)
+                    )
             if not self._full_metadata_dict:
                 detail = "; ".join(diag) if diag else "all fallbacks returned None"
                 raise BadResponseException(f"Fetching Post metadata failed ({detail}).")
