@@ -1348,31 +1348,28 @@ class Profile:
     def _from_page(context: InstaloaderContext, username: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return the node of a profile and the user data that its page embeds."""
         user: Dict[str, Any] = {}
-        if not context.is_logged_in and os.environ.get("CF_WORKER_URL", "").strip():
+        if os.environ.get("CF_WORKER_URL", "").strip():
             embed_user = Profile._from_profile_embed(context, username)
             if embed_user:
-                user = embed_user
-        if not user.get("pk"):
+                user.update(embed_user)
+        if not user.get("pk") or user.get("pk") == "0":
             try:
                 page = context.get_page_data("{0}/".format(username.lower()))
             except QueryReturnedNotFoundException:
                 page = []
             for data in page:
-                user.update(data.get("xig_user_by_username") or {})
+                page_u = data.get("xig_user_by_username") or {}
+                if isinstance(page_u, dict) and page_u:
+                    user.update(page_u)
         if not user.get("pk"):
             embed_user = Profile._from_profile_embed(context, username)
             if embed_user:
-                user = embed_user
+                user.update(embed_user)
         if not user.get("pk"):
             raise ProfileNotExistsException("Profile {} does not exist.".format(username))
         # The page's "id" is not the user ID, which is "pk".
         node = dict(user, id=user["pk"])
         node.pop("polaris_ordered_timeline_connection", None)
-        if context.is_logged_in:
-            # The page shows the profile as a logged-out visitor sees it. Leave the missing
-            # fields, notably the viewer's relationship to the profile, such as
-            # followed_by_viewer, to the GraphQL profile query in _obtain_metadata().
-            return node, user
         return Profile._normalize_profile_data(node), user
 
     @classmethod
@@ -1456,6 +1453,10 @@ class Profile:
                     self._has_full_metadata = True
                     return
                 user_id = self._node.get('id') or self._node.get('pk')
+                if not user_id or str(user_id) == '0':
+                    self._node, self._page_user = self._from_page(self._context, self.username)
+                    self._has_full_metadata = True
+                    return
                 variables = {
                     "id": str(user_id),
                     "render_surface": "PROFILE",
@@ -1465,25 +1466,27 @@ class Profile:
                     "__relay_internal__pv__PolarisWebSchoolsEnabledrelayprovider": False,
                     "enable_integrity_filters": True,
                 }
-                data = self._context.doc_id_graphql_query('27937681195819736', variables)
+                try:
+                    data = self._context.doc_id_graphql_query('27937681195819736', variables)
+                except InstaloaderException:
+                    data = None
                 if data is None:
+                    if 'edge_followed_by' in self._node:
+                        self._has_full_metadata = True
+                        return
                     raise QueryReturnedNotFoundException('GraphQL query returned None')
                 user_data = data.get('data', {}).get('user')
                 if user_data is None:
+                    if 'edge_followed_by' in self._node:
+                        self._has_full_metadata = True
+                        return
                     raise ProfileNotExistsException('Profile {} does not exist.'.format(self.username))
                 self._node = self._normalize_profile_data(user_data)
                 self._has_full_metadata = True
         except (QueryReturnedNotFoundException, KeyError) as err:
-            top_search_results = TopSearchResults(self._context, self.username)
-            similar_profiles = [profile.username for profile in top_search_results.get_profiles()]
-            if similar_profiles:
-                if self.username in similar_profiles:
-                    raise ProfileNotExistsException(
-                        f"Profile {self.username} seems to exist, but could not be loaded.") from err
-                raise ProfileNotExistsException('Profile {} does not exist.\nThe most similar profile{}: {}.'
-                                                .format(self.username,
-                                                        's are' if len(similar_profiles) > 1 else ' is',
-                                                        ', '.join(similar_profiles[0:5]))) from err
+            if 'edge_followed_by' in self._node:
+                self._has_full_metadata = True
+                return
             raise ProfileNotExistsException('Profile {} does not exist.'.format(self.username)) from err
 
     @staticmethod

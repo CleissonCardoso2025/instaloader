@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
 from typing import Dict, List, Tuple
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from fastapi import HTTPException
 
@@ -171,12 +171,23 @@ class InstagramScraperService:
         """Carrega sessão automaticamente via variáveis de ambiente (IG_SESSIONID) ou arquivo persistido."""
         env_sessionid = os.environ.get("IG_SESSIONID", "").strip()
         if env_sessionid:
+            clean_sid = unquote(env_sessionid)
             env_user = os.environ.get("IG_USERNAME", "instagram_user").strip().lower()
-            cookies = {"sessionid": env_sessionid}
-            if os.environ.get("IG_CSRFTOKEN"):
-                cookies["csrftoken"] = os.environ["IG_CSRFTOKEN"].strip()
+            cookies = {
+                "sessionid": clean_sid,
+                "csrftoken": os.environ.get("IG_CSRFTOKEN", "missing").strip() or "missing",
+            }
             if os.environ.get("IG_DS_USER_ID"):
                 cookies["ds_user_id"] = os.environ["IG_DS_USER_ID"].strip()
+            elif ":" in clean_sid and clean_sid.split(":", 1)[0].isdigit():
+                cookies["ds_user_id"] = clean_sid.split(":", 1)[0]
+            for env_key, cookie_key in (
+                ("IG_MID", "mid"),
+                ("IG_DID", "ig_did"),
+                ("IG_RUR", "rur"),
+            ):
+                if os.environ.get(env_key):
+                    cookies[cookie_key] = os.environ[env_key].strip()
             with suppress(Exception):
                 self.loader.load_session(env_user, cookies)
             return
@@ -336,12 +347,39 @@ class InstagramScraperService:
             handle_instaloader_error(exc)
             raise
 
+    def _scan_followers_list(
+        self, profile: Profile, limit: int = 200
+    ) -> Tuple[List[ProfileSummarySchema], bool]:
+        """Obtém a lista nominal de seguidores via API v1 (com suporte ao Cloudflare Worker)."""
+        if not self.loader.context.is_logged_in:
+            return [], False
+        uid_str = str(profile.userid or 0)
+        v1_users = self.loader.context.fetch_followers_v1(uid_str, max_count=limit)
+        if v1_users:
+            items = [
+                ProfileSummarySchema(
+                    userid=int(u.get("pk") or u.get("id") or 0),
+                    username=str(u.get("username") or ""),
+                    full_name=u.get("full_name"),
+                    profile_pic_url=u.get("profile_pic_url"),
+                    is_private=bool(u.get("is_private", False)),
+                    is_verified=bool(u.get("is_verified", False)),
+                )
+                for u in v1_users
+                if u.get("username")
+            ]
+            return items, True
+        return [], False
+
     def get_profile_followers(
         self, username: str, limit: int = 50
     ) -> List[ProfileSummarySchema]:
         clean_username = username.strip().lstrip("@").lower()
         try:
             profile = Profile.from_username(self.loader.context, clean_username)
+            items, ok = self._scan_followers_list(profile, limit=limit)
+            if ok:
+                return items
             return [
                 serialize_profile_summary(p)
                 for p in islice(profile.get_followers(), limit)
@@ -371,15 +409,9 @@ class InstagramScraperService:
             current_count = int(profile.followers or 0)
             now_utc = datetime.now(timezone.utc)
 
-            scanned_followers: List[ProfileSummarySchema] = []
-            who_available = False
-            if self.loader.context.is_logged_in:
-                with suppress(InstaloaderException, KeyError, ValueError, TypeError):
-                    scanned_followers = [
-                        serialize_profile_summary(p)
-                        for p in islice(profile.get_followers(), max_scan)
-                    ]
-                    who_available = True
+            scanned_followers, who_available = self._scan_followers_list(
+                profile, limit=max_scan
+            )
 
             current_map: Dict[str, dict] = {
                 str(f.userid or f.username): f.model_dump() for f in scanned_followers

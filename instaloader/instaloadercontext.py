@@ -256,7 +256,7 @@ class InstaloaderContext:
         session = requests.Session()
         session.cookies = requests.utils.cookiejar_from_dict(sessiondata)
         session.headers.update(self._default_http_header())
-        session.headers.update({'X-CSRFToken': session.cookies.get_dict()['csrftoken']})
+        session.headers.update({'X-CSRFToken': session.cookies.get_dict().get('csrftoken', '')})
         # Override default timeout behavior.
         # Need to silence mypy bug for this. See: https://github.com/python/mypy/issues/2427
         session.request = partial(session.request, timeout=self.request_timeout)  # type: ignore
@@ -848,7 +848,23 @@ class InstaloaderContext:
             return extracted
 
         data: List[Dict[str, Any]] = []
-        if os.environ.get('CF_WORKER_URL', '').strip():
+        if self.is_logged_in:
+            try:
+                status_code, _, auth_html = self._fetch_authenticated_via_worker_or_direct(
+                    'https://www.instagram.com/{0}'.format(path.lstrip('/')),
+                    extra_headers={
+                        'Accept': 'text/html',
+                        'Sec-Fetch-Dest': 'document',
+                        'Sec-Fetch-Mode': 'navigate',
+                        'Sec-Fetch-Site': 'none',
+                    },
+                )
+                if status_code == 200:
+                    data = _extract_from_html(auth_html)
+            except requests.exceptions.RequestException:
+                data = []
+
+        if not data and os.environ.get('CF_WORKER_URL', '').strip():
             try:
                 crawler_html = self.get_crawler_html(path)
                 data = _extract_from_html(crawler_html)
@@ -1021,6 +1037,84 @@ class InstaloaderContext:
             except requests.exceptions.RequestException as err:
                 diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         raise ConnectionException("Profile embed request failed ({})".format(", ".join(diag_notes)))
+
+    def _fetch_authenticated_via_worker_or_direct(
+        self, url: str, extra_headers: Optional[Dict[str, str]] = None
+    ) -> Tuple[int, str, str]:
+        """Fetch an Instagram URL with current session cookies via Cloudflare Worker POST or direct."""
+        cookies_dict = self._session.cookies.get_dict()
+        cookie_str = "; ".join(f"{k}={v}" for k, v in cookies_dict.items() if v)
+        req_headers: Dict[str, str] = {
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.instagram.com/',
+            'Origin': 'https://www.instagram.com',
+            'X-Requested-With': 'XMLHttpRequest',
+            'X-Instagram-AJAX': '1',
+        }
+        if cookies_dict.get('csrftoken'):
+            req_headers['X-CSRFToken'] = cookies_dict['csrftoken']
+        if extra_headers:
+            req_headers.update(extra_headers)
+        if cookie_str:
+            req_headers['Cookie'] = cookie_str
+
+        worker_url = os.environ.get('CF_WORKER_URL', '').strip()
+        worker_secret = os.environ.get('CF_WORKER_SECRET', '').strip()
+        if worker_url:
+            relay_headers: Dict[str, str] = {'Content-Type': 'application/json'}
+            if worker_secret:
+                relay_headers['X-Relay-Secret'] = worker_secret
+            payload = {
+                'url': url,
+                'method': 'GET',
+                'ua': self.user_agent,
+                'headers': req_headers,
+            }
+            with suppress(requests.exceptions.RequestException):
+                with requests.Session() as relay_session:
+                    w_resp = relay_session.post(
+                        worker_url,
+                        json=payload,
+                        headers=relay_headers,
+                        timeout=self.request_timeout,
+                    )
+                if w_resp.status_code in (200, 401, 403, 404):
+                    final_url = w_resp.headers.get('X-Final-Url') or url
+                    return w_resp.status_code, final_url, w_resp.text
+
+        resp = self._session.get(url, headers=extra_headers or {}, timeout=self.request_timeout)
+        return resp.status_code, resp.url, resp.text
+
+    def fetch_followers_v1(self, user_id: str, max_count: int = 200) -> List[Dict[str, Any]]:
+        """Fetch followers via Instagram v1 friendships endpoint (routed through Cloudflare Worker if set)."""
+        if not self.is_logged_in or not user_id or str(user_id) == '0':
+            return []
+        collected: List[Dict[str, Any]] = []
+        next_max_id: Optional[str] = None
+        while len(collected) < max_count:
+            batch = min(50, max_count - len(collected))
+            url = f"https://www.instagram.com/api/v1/friendships/{user_id}/followers/?count={batch}"
+            if next_max_id:
+                url += f"&max_id={urllib.parse.quote(str(next_max_id))}"
+            try:
+                status_code, _, text = self._fetch_authenticated_via_worker_or_direct(
+                    url,
+                    extra_headers={'x-ig-app-id': '936619743392459'},
+                )
+                if status_code != 200:
+                    break
+                data = json.loads(text)
+                users = data.get('users') or []
+                if not isinstance(users, list) or not users:
+                    break
+                collected.extend(u for u in users if isinstance(u, dict))
+                next_max_id = data.get('next_max_id')
+                if not next_max_id or not data.get('big_list'):
+                    break
+            except (requests.exceptions.RequestException, json.decoder.JSONDecodeError, KeyError, TypeError):
+                break
+        return collected[:max_count]
 
     def write_raw(self, resp: Union[bytes, requests.Response], filename: str) -> None:
         """Write raw response data into a file.
