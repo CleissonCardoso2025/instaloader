@@ -928,20 +928,21 @@ class InstaloaderContext:
         raise ConnectionException("Crawler request to {} failed ({})".format(url, ", ".join(diag_notes)))
 
     def get_embed_html(self, shortcode: str) -> str:
-        """Fetch the public embed/captioned HTML page for a post or reel shortcode."""
+        """Fetch the public SSR embed/captioned HTML page for a post or reel shortcode."""
         urls = (
             'https://www.instagram.com/p/{0}/embed/captioned/'.format(shortcode),
             'https://www.instagram.com/reel/{0}/embed/captioned/'.format(shortcode),
             'https://www.instagram.com/p/{0}/embed/'.format(shortcode),
         )
+        # Non-JS User-Agents (curl, facebookexternalhit) without Sec-Fetch-* headers force Instagram
+        # to serve the 200KB SSR XPolarisEmbedPostController HTML instead of the 510KB empty React SPA shell.
         agents = (
+            'curl/8.5.0',
+            'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            'TelegramBot (like TwitterBot)',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
             '(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 '
-            '(KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-            'TelegramBot (like TwitterBot)',
         )
-        last_html = ''
         diag_notes: List[str] = []
         for url in urls:
             for agent in agents:
@@ -949,10 +950,6 @@ class InstaloaderContext:
                     'User-Agent': agent,
                     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.9',
-                    'Referer': 'https://www.instagram.com/',
-                    'Sec-Fetch-Dest': 'iframe',
-                    'Sec-Fetch-Mode': 'navigate',
-                    'Sec-Fetch-Site': 'cross-site',
                 }
                 try:
                     with requests.Session() as clean_session:
@@ -960,21 +957,18 @@ class InstaloaderContext:
                     if resp.status_code == 404:
                         raise QueryReturnedNotFoundException(self._response_error(resp))
                     has_embed = (
-                        'contextJSON' in resp.text
-                        or 'EmbeddedMediaImage' in resp.text
+                        'EmbeddedMediaImage' in resp.text
+                        or '"contextJSON":"' in resp.text
+                        or 'XPolarisEmbedPostController' in resp.text
                         or 'shortcode_media' in resp.text
                     )
-                    diag_notes.append(f"{resp.status_code}:len={len(resp.text)}:embed={has_embed}")
-                    if resp.status_code == 200:
-                        last_html = resp.text
-                        if has_embed:
-                            return resp.text
+                    diag_notes.append(
+                        f"{agent.split('/', maxsplit=1)[0]}:{resp.status_code}:len={len(resp.text)}:embed={has_embed}"
+                    )
+                    if resp.status_code == 200 and has_embed:
+                        return resp.text
                 except requests.exceptions.RequestException as err:
-                    diag_notes.append(f"err={err}")
-            if last_html:
-                break
-        if last_html:
-            return last_html
+                    diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         raise ConnectionException("Embed request failed ({})".format(", ".join(diag_notes)))
 
     def write_raw(self, resp: Union[bytes, requests.Response], filename: str) -> None:

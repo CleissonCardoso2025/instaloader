@@ -473,11 +473,13 @@ class Post:
         text = html_lib.unescape(cap_html).strip()
         return text or None
 
-    def _obtain_metadata_from_embed(self) -> Optional[Dict[str, Any]]:
+    def _obtain_metadata_from_embed(self, diag: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
         """Fallback: extract post metadata from /p/<shortcode>/embed/captioned/."""
         try:
             raw_html = self._context.get_embed_html(self.shortcode)
-        except (InstaloaderException, KeyError, ValueError, TypeError):
+        except (InstaloaderException, KeyError, ValueError, TypeError) as err:
+            if diag is not None:
+                diag.append(f"embed_err={err}")
             return None
 
         ctx_match = re.search(r'"contextJSON":("(?:\\.|[^"\\])*")', raw_html)
@@ -522,24 +524,47 @@ class Post:
                     node.setdefault("video_url", None)
                     return node
 
-        # HTML-only embed fallback
+        # HTML-only embed fallback (when contextJSON is null in SSR XPolarisEmbedPostController)
+        display_url = ""
         img_match = re.search(
-            r'<img[^>]*class="EmbeddedMediaImage"[^>]*src="([^"]+)"'
-            r'|<img[^>]*src="([^"]+)"[^>]*class="EmbeddedMediaImage"',
+            r'<img[^>]*class="[^"]*EmbeddedMediaImage[^"]*"[^>]*src="([^"]+)"'
+            r'|<img[^>]*src="([^"]+)"[^>]*class="[^"]*EmbeddedMediaImage[^"]*"',
             raw_html,
         )
         if img_match:
             display_url = html_lib.unescape(img_match.group(1) or img_match.group(2))
-            user_match = re.search(r'class="UsernameText"[^>]*>([^<]+)<', raw_html)
-            username = html_lib.unescape(user_match.group(1)).strip() if user_match else ""
-            caption_text = Post._extract_caption_from_embed_html(raw_html)
+        else:
+            for cand in re.finditer(r'<img[^>]*src="(https://[^"]+)"', raw_html):
+                cand_url = html_lib.unescape(cand.group(1))
+                if "s150x150" not in cand_url:
+                    display_url = cand_url
+                    break
+                if not display_url:
+                    display_url = cand_url
+
+        user_match = re.search(
+            r'class="UsernameText"[^>]*>([^<]+)<|class="CaptionUsername"[^>]*>([^<]+)<',
+            raw_html,
+        )
+        username = (
+            html_lib.unescape(user_match.group(1) or user_match.group(2)).strip()
+            if user_match
+            else ""
+        )
+        caption_text = Post._extract_caption_from_embed_html(raw_html)
+        if display_url or caption_text or username:
+            is_video = bool(
+                "EmbeddedMediaVideo" in raw_html
+                or "WatchOnInstagram" in raw_html
+                or '"GraphVideo"' in raw_html
+            )
             media_id = Post.shortcode_to_mediaid(self.shortcode)
             taken_at = ((media_id >> 23) + 1314220021721) // 1000
             return {
                 "id": str(media_id),
                 "shortcode": self.shortcode,
-                "__typename": "GraphImage",
-                "is_video": False,
+                "__typename": "GraphVideo" if is_video else "GraphImage",
+                "is_video": is_video,
                 "taken_at_timestamp": taken_at,
                 "display_url": display_url,
                 "video_url": None,
@@ -552,6 +577,8 @@ class Post:
                 "edge_media_preview_like": {"count": 0},
                 "edge_media_to_parent_comment": {"count": 0, "edges": []},
             }
+        if diag is not None:
+            diag.append(f"embed_empty(len={len(raw_html)})")
         return None
 
     def _obtain_metadata_from_opengraph(self, diag: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
@@ -672,8 +699,8 @@ class Post:
                 self._full_metadata_dict = Post._normalize_post_data(items[0])
             else:
                 self._full_metadata_dict = (
-                    self._obtain_metadata_from_page()
-                    or self._obtain_metadata_from_embed()
+                    self._obtain_metadata_from_embed(diag=diag)
+                    or self._obtain_metadata_from_page()
                     or self._obtain_metadata_from_opengraph(diag=diag)
                 )
             if not self._full_metadata_dict:
