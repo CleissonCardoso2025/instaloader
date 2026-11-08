@@ -998,6 +998,30 @@ class InstaloaderContext:
                     diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         raise ConnectionException("Embed request failed ({})".format(", ".join(diag_notes)))
 
+    def get_profile_embed_html(self, username: str) -> str:
+        """Fetch the public SSR profile embed HTML page for a username."""
+        url = 'https://www.instagram.com/{0}/embed/'.format(username.strip().lstrip('@').lower())
+        agents = (
+            'curl/8.5.0',
+            'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
+            'TelegramBot (like TwitterBot)',
+        )
+        diag_notes: List[str] = []
+        for agent in agents:
+            try:
+                status_code, _, text = self._fetch_via_worker_or_direct(url, agent)
+                if status_code == 404:
+                    raise QueryReturnedNotFoundException(f"404 Not Found: {url}")
+                has_ctx = '"contextJSON":"' in text or 'followers_count' in text
+                diag_notes.append(
+                    f"{agent.split('/', maxsplit=1)[0]}:{status_code}:len={len(text)}:ctx={has_ctx}"
+                )
+                if status_code == 200 and has_ctx:
+                    return text
+            except requests.exceptions.RequestException as err:
+                diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
+        raise ConnectionException("Profile embed request failed ({})".format(", ".join(diag_notes)))
+
     def write_raw(self, resp: Union[bytes, requests.Response], filename: str) -> None:
         """Write raw response data into a file.
 

@@ -14,6 +14,7 @@ from instaloader.structures import Post
 from .schemas import (
     CommentSchema,
     DownloadResponse,
+    FollowersDiffResponse,
     HashtagPostsResponse,
     HashtagSchema,
     HealthResponse,
@@ -222,6 +223,39 @@ def get_profile_followers(
     limit: int = Query(50, ge=1, le=500, description="Quantidade máxima de seguidores"),
 ):
     return scraper_service.get_profile_followers(username=username, limit=limit)
+
+
+@app.get(
+    "/api/v1/profiles/{username}/new-followers",
+    response_model=FollowersDiffResponse,
+    tags=["Perfis"],
+    summary=(
+        "Identificar novos seguidores desde o último GET (quantos entraram e quem são)"
+    ),
+)
+def get_profile_new_followers(
+    username: str = Path(..., description="Username do perfil do Instagram (sem @)"),
+    max_scan: int = Query(
+        200,
+        ge=10,
+        le=2000,
+        description=(
+            "Quantidade máxima de seguidores recentes a escanear para identificar "
+            "quem são os novos seguidores (quando autenticado com IG_SESSIONID)"
+        ),
+    ),
+    reset_snapshot: bool = Query(
+        False,
+        description=(
+            "Se True, descarta o histórico anterior e cria um novo snapshot base agora"
+        ),
+    ),
+):
+    return scraper_service.check_new_followers(
+        username=username,
+        max_scan=max_scan,
+        reset_snapshot=reset_snapshot,
+    )
 
 
 @app.get(

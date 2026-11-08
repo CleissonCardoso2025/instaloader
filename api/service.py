@@ -38,6 +38,7 @@ from instaloader import (
 from .schemas import (
     CommentSchema,
     DownloadResponse,
+    FollowersDiffResponse,
     HashtagPostsResponse,
     HashtagSchema,
     HighlightSchema,
@@ -345,6 +346,152 @@ class InstagramScraperService:
                 serialize_profile_summary(p)
                 for p in islice(profile.get_followers(), limit)
             ]
+        except HANDLED_EXCEPTIONS as exc:
+            handle_instaloader_error(exc)
+            raise
+
+    def check_new_followers(
+        self,
+        username: str,
+        max_scan: int = 200,
+        reset_snapshot: bool = False,
+    ) -> FollowersDiffResponse:
+        """Compara os seguidores atuais com a última consulta salva e retorna quantos e quem entrou."""
+        clean_username = username.strip().lstrip("@").lower()
+        snapshots_dir = self.download_dir / "followers_snapshots"
+        snapshots_dir.mkdir(parents=True, exist_ok=True)
+        snap_file = snapshots_dir / f"{clean_username}.json"
+
+        if reset_snapshot and snap_file.exists():
+            with suppress(OSError):
+                snap_file.unlink()
+
+        try:
+            profile = Profile.from_username(self.loader.context, clean_username)
+            current_count = int(profile.followers or 0)
+            now_utc = datetime.now(timezone.utc)
+
+            scanned_followers: List[ProfileSummarySchema] = []
+            who_available = False
+            if self.loader.context.is_logged_in:
+                with suppress(InstaloaderException, KeyError, ValueError, TypeError):
+                    scanned_followers = [
+                        serialize_profile_summary(p)
+                        for p in islice(profile.get_followers(), max_scan)
+                    ]
+                    who_available = True
+
+            current_map: Dict[str, dict] = {
+                str(f.userid or f.username): f.model_dump() for f in scanned_followers
+            }
+
+            if not snap_file.exists():
+                snap_payload = {
+                    "username": clean_username,
+                    "snapshot_at": now_utc.isoformat(),
+                    "followers_count": current_count,
+                    "who_available": who_available,
+                    "followers_map": current_map,
+                }
+                snap_file.write_text(
+                    json.dumps(snap_payload, ensure_ascii=False), encoding="utf-8"
+                )
+                msg = (
+                    f"Snapshot inicial criado para @{clean_username} com {current_count} seguidores. "
+                    "Faça um novo GET daqui a alguns minutos para ver os novos seguidores!"
+                )
+                if not who_available:
+                    msg += (
+                        " (Modo público: monitorando a quantidade exata de novos seguidores. "
+                        "Para listar também o @username de quem seguiu, configure IG_SESSIONID no Dokploy)."
+                    )
+                return FollowersDiffResponse(
+                    username=clean_username,
+                    is_first_snapshot=True,
+                    previous_snapshot_at=None,
+                    current_snapshot_at=now_utc,
+                    elapsed_seconds=None,
+                    previous_followers_count=None,
+                    current_followers_count=current_count,
+                    followers_count_delta=0,
+                    new_followers_count=0,
+                    new_followers=[],
+                    lost_followers_count=0,
+                    lost_followers=[],
+                    who_tracking_available=who_available,
+                    message=msg,
+                )
+
+            prev_data = json.loads(snap_file.read_text(encoding="utf-8"))
+            prev_at_str = prev_data.get("snapshot_at")
+            prev_at = (
+                datetime.fromisoformat(prev_at_str) if prev_at_str else now_utc
+            )
+            if prev_at.tzinfo is None:
+                prev_at = prev_at.replace(tzinfo=timezone.utc)
+            elapsed = round((now_utc - prev_at).total_seconds(), 2)
+            prev_count = int(prev_data.get("followers_count", current_count))
+            delta = current_count - prev_count
+            prev_map: Dict[str, dict] = prev_data.get("followers_map") or {}
+
+            new_followers: List[ProfileSummarySchema] = []
+            lost_followers: List[ProfileSummarySchema] = []
+
+            if who_available and prev_map:
+                for key, item_dict in current_map.items():
+                    if key not in prev_map:
+                        new_followers.append(ProfileSummarySchema(**item_dict))
+                if current_count <= max_scan and prev_count <= max_scan:
+                    for key, item_dict in prev_map.items():
+                        if key not in current_map:
+                            lost_followers.append(ProfileSummarySchema(**item_dict))
+                    merged_map = current_map
+                else:
+                    merged_map = {**prev_map, **current_map}
+                new_count = len(new_followers) if new_followers else max(0, delta)
+                lost_count = len(lost_followers) if lost_followers else max(0, -delta)
+            else:
+                merged_map = current_map or prev_map
+                new_count = max(0, delta)
+                lost_count = max(0, -delta)
+
+            snap_payload = {
+                "username": clean_username,
+                "snapshot_at": now_utc.isoformat(),
+                "followers_count": current_count,
+                "who_available": who_available,
+                "followers_map": merged_map,
+            }
+            snap_file.write_text(
+                json.dumps(snap_payload, ensure_ascii=False), encoding="utf-8"
+            )
+
+            msg = (
+                f"Comparação concluída após {elapsed}s: "
+                f"{new_count} novo(s) seguidor(es) (saldo: {delta:+d}, total atual: {current_count})."
+            )
+            if not who_available:
+                msg += (
+                    " Para saber também QUEM são (@username e nome), "
+                    "adicione IG_SESSIONID nas variáveis de ambiente do Dokploy."
+                )
+
+            return FollowersDiffResponse(
+                username=clean_username,
+                is_first_snapshot=False,
+                previous_snapshot_at=prev_at,
+                current_snapshot_at=now_utc,
+                elapsed_seconds=elapsed,
+                previous_followers_count=prev_count,
+                current_followers_count=current_count,
+                followers_count_delta=delta,
+                new_followers_count=new_count,
+                new_followers=new_followers,
+                lost_followers_count=lost_count,
+                lost_followers=lost_followers,
+                who_tracking_available=who_available,
+                message=msg,
+            )
         except HANDLED_EXCEPTIONS as exc:
             handle_instaloader_error(exc)
             raise

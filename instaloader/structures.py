@@ -1294,21 +1294,75 @@ class Profile:
         return profile
 
     @staticmethod
+    def _from_profile_embed(
+        context: InstaloaderContext, username: str
+    ) -> Optional[Dict[str, Any]]:
+        """Fallback: extract profile metadata and recent posts from /<username>/embed/."""
+        try:
+            raw_html = context.get_profile_embed_html(username)
+        except (InstaloaderException, KeyError, ValueError, TypeError):
+            return None
+        ctx_match = re.search(r'"contextJSON":("(?:\\.|[^"\\])*")', raw_html)
+        if not ctx_match:
+            return None
+        with suppress(json.decoder.JSONDecodeError, KeyError, TypeError, ValueError):
+            ctx_outer = json.loads(json.loads(ctx_match.group(1)))
+            ctx = ctx_outer.get("context") or ctx_outer
+            if not isinstance(ctx, dict) or not ctx.get("username"):
+                return None
+            gm = ctx.get("graphql_media") or []
+            first_owner: Dict[str, Any] = {}
+            edges: List[Dict[str, Any]] = []
+            for item in gm:
+                if isinstance(item, dict) and isinstance(item.get("shortcode_media"), dict):
+                    sm = item["shortcode_media"]
+                    if not first_owner and isinstance(sm.get("owner"), dict):
+                        first_owner = sm["owner"]
+                    if sm.get("shortcode"):
+                        edges.append({"node": {"code": sm["shortcode"]}})
+            pk_val = str(ctx.get("owner_id") or first_owner.get("id") or "0")
+            return {
+                "pk": pk_val,
+                "id": pk_val,
+                "username": ctx.get("username") or username.lower(),
+                "full_name": ctx.get("full_name") or "",
+                "biography": ctx.get("biography") or "",
+                "external_url": ctx.get("external_url"),
+                "is_private": bool(first_owner.get("is_private", False)),
+                "is_verified": bool(ctx.get("is_verified") or ctx.get("verified")),
+                "is_business_account": False,
+                "business_category_name": None,
+                "profile_pic_url": ctx.get("profile_pic_url") or "",
+                "profile_pic_url_hd": ctx.get("profile_pic_url") or "",
+                "follower_count": int(ctx.get("followers_count") or 0),
+                "following_count": int(ctx.get("following_count") or 0),
+                "media_count": int(ctx.get("posts_count") or 0),
+                "polaris_ordered_timeline_connection": {
+                    "edges": edges,
+                    "page_info": {"has_next_page": False, "end_cursor": None},
+                },
+            }
+        return None
+
+    @staticmethod
     def _from_page(context: InstaloaderContext, username: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return the node of a profile and the user data that its page embeds."""
-        # Resolve the profile through its public web page, which Instagram renders with the
-        # profile embedded. The web_profile_info endpoint previously used here is refused
-        # with HTTP 400 for some professional profiles, and with HTTP 401 or 429 for some
-        # sessions, both anonymously and when logged in.
-        try:
-            page = context.get_page_data("{0}/".format(username.lower()))
-        except QueryReturnedNotFoundException:
-            page = []
-        # The page embeds two queries for the profile: one for its details and one for its
-        # posts.
         user: Dict[str, Any] = {}
-        for data in page:
-            user.update(data.get("xig_user_by_username") or {})
+        if not context.is_logged_in and os.environ.get("CF_WORKER_URL", "").strip():
+            embed_user = Profile._from_profile_embed(context, username)
+            if embed_user:
+                user = embed_user
+        if not user.get("pk"):
+            try:
+                page = context.get_page_data("{0}/".format(username.lower()))
+            except QueryReturnedNotFoundException:
+                page = []
+            for data in page:
+                user.update(data.get("xig_user_by_username") or {})
+        if not user.get("pk"):
+            embed_user = Profile._from_profile_embed(context, username)
+            if embed_user:
+                user = embed_user
         if not user.get("pk"):
             raise ProfileNotExistsException("Profile {} does not exist.".format(username))
         # The page's "id" is not the user ID, which is "pk".

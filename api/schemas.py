@@ -8,7 +8,8 @@ from pydantic import BaseModel, Field
 class HealthResponse(BaseModel):
     status: str = Field(default="ok", description="Status da API")
     instaloader_version: str = Field(..., description="Versão do Instaloader")
-    is_logged_in: bool = Field(..., description="Se há sessão autenticada ativa")
+    is_logged_in: bool = Field(...,
+                               description="Se há sessão autenticada ativa")
     logged_username: Optional[str] = Field(
         None, description="Usuário autenticado (se houver)"
     )
@@ -25,8 +26,10 @@ class LocationSchema(BaseModel):
 
 class SidecarNodeSchema(BaseModel):
     index: int = Field(..., description="Índice do item no carrossel (base 1)")
-    is_video: bool = Field(..., description="Se este item do carrossel é um vídeo")
-    display_url: str = Field(..., description="URL da imagem ou miniatura do vídeo")
+    is_video: bool = Field(...,
+                           description="Se este item do carrossel é um vídeo")
+    display_url: str = Field(...,
+                             description="URL da imagem ou miniatura do vídeo")
     video_url: Optional[str] = Field(
         None, description="URL direta do vídeo (se for vídeo)"
     )
@@ -40,9 +43,12 @@ class ProfileSummarySchema(BaseModel):
     full_name: Optional[str] = Field(
         None, description="Nome completo exibido no perfil"
     )
-    is_private: Optional[bool] = Field(None, description="Se o perfil é privado")
-    is_verified: Optional[bool] = Field(None, description="Se o perfil é verificado")
-    profile_pic_url: Optional[str] = Field(None, description="URL da foto de perfil")
+    is_private: Optional[bool] = Field(
+        None, description="Se o perfil é privado")
+    is_verified: Optional[bool] = Field(
+        None, description="Se o perfil é verificado")
+    profile_pic_url: Optional[str] = Field(
+        None, description="URL da foto de perfil")
 
 
 class ProfileDetailSchema(ProfileSummarySchema):
@@ -53,12 +59,14 @@ class ProfileDetailSchema(ProfileSummarySchema):
     biography_mentions: List[str] = Field(
         default_factory=list, description="Menções (@) presentes na bio"
     )
-    external_url: Optional[str] = Field(None, description="Link externo na bio")
+    external_url: Optional[str] = Field(
+        None, description="Link externo na bio")
     bio_links: List[Dict[str, Any]] = Field(
         default_factory=list, description="Lista de links na bio"
     )
     followers: Optional[int] = Field(None, description="Número de seguidores")
-    followees: Optional[int] = Field(None, description="Número de perfis seguidos")
+    followees: Optional[int] = Field(
+        None, description="Número de perfis seguidos")
     mediacount: Optional[int] = Field(None, description="Total de publicações")
     igtvcount: Optional[int] = Field(None, description="Total de vídeos IGTV")
     is_business_account: Optional[bool] = Field(
@@ -67,24 +75,30 @@ class ProfileDetailSchema(ProfileSummarySchema):
     business_category_name: Optional[str] = Field(
         None, description="Categoria da conta comercial"
     )
-    instagram_url: str = Field(..., description="URL pública do perfil no Instagram")
+    instagram_url: str = Field(...,
+                               description="URL pública do perfil no Instagram")
 
 
 class PostSchema(BaseModel):
     shortcode: str = Field(..., description="Shortcode único do post/reel")
     mediaid: int = Field(..., description="ID numérico da mídia")
-    instagram_url: str = Field(..., description="Link direto para o post no Instagram")
+    instagram_url: str = Field(...,
+                               description="Link direto para o post no Instagram")
     typename: str = Field(
         ..., description="Tipo da mídia: GraphImage, GraphVideo ou GraphSidecar"
     )
-    date_utc: datetime = Field(..., description="Data/hora da publicação em UTC")
+    date_utc: datetime = Field(...,
+                               description="Data/hora da publicação em UTC")
     date_local: datetime = Field(
         ..., description="Data/hora da publicação no fuso local"
     )
-    owner_username: Optional[str] = Field(None, description="Username do autor do post")
+    owner_username: Optional[str] = Field(
+        None, description="Username do autor do post")
     owner_id: Optional[int] = Field(None, description="ID do autor do post")
-    title: Optional[str] = Field(None, description="Título do post (quando aplicável)")
-    caption: Optional[str] = Field(None, description="Legenda completa do post")
+    title: Optional[str] = Field(
+        None, description="Título do post (quando aplicável)")
+    caption: Optional[str] = Field(
+        None, description="Legenda completa do post")
     caption_hashtags: List[str] = Field(
         default_factory=list, description="Hashtags na legenda"
     )
@@ -97,8 +111,10 @@ class PostSchema(BaseModel):
     tagged_users: List[str] = Field(
         default_factory=list, description="Usuários marcados na publicação"
     )
-    is_video: bool = Field(..., description="Se a publicação principal é um vídeo/reel")
-    url: str = Field(..., description="URL da imagem principal ou thumbnail do vídeo")
+    is_video: bool = Field(...,
+                           description="Se a publicação principal é um vídeo/reel")
+    url: str = Field(...,
+                     description="URL da imagem principal ou thumbnail do vídeo")
     video_url: Optional[str] = Field(
         None, description="URL direta do arquivo de vídeo (.mp4)"
     )
@@ -119,7 +135,8 @@ class PostSchema(BaseModel):
         1,
         description="Quantidade de itens (1 para foto/vídeo único, >1 para carrossel)",
     )
-    is_sponsored: bool = Field(False, description="Se é publicação patrocinada")
+    is_sponsored: bool = Field(
+        False, description="Se é publicação patrocinada")
     sponsor_users: List[str] = Field(
         default_factory=list, description="Perfis patrocinadores"
     )
@@ -218,7 +235,8 @@ class PostByUrlRequest(BaseModel):
 
 
 class DownloadResponse(BaseModel):
-    target: str = Field(..., description="Alvo do download (shortcode ou username)")
+    target: str = Field(...,
+                        description="Alvo do download (shortcode ou username)")
     directory: str = Field(
         ..., description="Caminho do diretório onde os arquivos foram salvos"
     )
@@ -244,3 +262,49 @@ class SessionCookiesRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str = Field(..., description="Usuário do Instagram")
     password: str = Field(..., description="Senha do Instagram")
+
+
+class FollowersDiffResponse(BaseModel):
+    username: str = Field(..., description="Username do perfil monitorado")
+    is_first_snapshot: bool = Field(
+        ...,
+        description="True na primeira chamada (cria o snapshot inicial); False nas chamadas seguintes",
+    )
+    previous_snapshot_at: Optional[datetime] = Field(
+        None, description="Data/hora (UTC) da consulta anterior"
+    )
+    current_snapshot_at: datetime = Field(
+        ..., description="Data/hora (UTC) da consulta atual"
+    )
+    elapsed_seconds: Optional[float] = Field(
+        None, description="Segundos decorridos desde a última consulta"
+    )
+    previous_followers_count: Optional[int] = Field(
+        None, description="Total de seguidores na consulta anterior"
+    )
+    current_followers_count: int = Field(
+        ..., description="Total de seguidores na consulta atual"
+    )
+    followers_count_delta: int = Field(
+        0,
+        description="Saldo líquido de seguidores no intervalo (current - previous)",
+    )
+    new_followers_count: int = Field(
+        0, description="Quantidade de novos seguidores identificados no intervalo"
+    )
+    new_followers: List[ProfileSummarySchema] = Field(
+        default_factory=list,
+        description="Lista nominal de quem são os novos seguidores (requer sessão/cookies ativos)",
+    )
+    lost_followers_count: int = Field(
+        0, description="Quantidade de seguidores que saíram no intervalo"
+    )
+    lost_followers: List[ProfileSummarySchema] = Field(
+        default_factory=list,
+        description="Lista nominal de quem deixou de seguir (quando disponível)",
+    )
+    who_tracking_available: bool = Field(
+        False,
+        description="True se a API está autenticada (IG_SESSIONID) e conseguiu listar quem são os seguidores",
+    )
+    message: str = Field(..., description="Resumo em português do monitoramento")
