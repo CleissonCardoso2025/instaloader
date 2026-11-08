@@ -118,17 +118,29 @@ curl -X GET "http://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/hi
 #### 9. Listar Seguidores (`Followers`) e Seguindo (`Followees`)
 ```bash
 # Seguidores
-curl -X GET "http://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/followers?limit=20" \
+curl -X GET "https://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/followers?limit=20" \
   -H "accept: application/json"
 
 # Seguindo
-curl -X GET "http://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/followees?limit=20" \
+curl -X GET "https://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/followees?limit=20" \
   -H "accept: application/json"
 ```
 
-#### 10. Listar contas similares sugeridas
+#### 10. Monitorar Novos Seguidores (`New Followers Diff` — Quantos entraram e Quem são)
+No 1º `GET` cria o snapshot base do perfil; nos `GET` seguintes (ex: a cada 5 minutos no n8n), retorna quantos seguidores entraram no intervalo (`new_followers_count`, `followers_count_delta`) e a lista de quem são (`new_followers`):
 ```bash
-curl -X GET "http://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/similar?limit=10" \
+# Checar novos seguidores desde a última consulta
+curl -X GET "https://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/new-followers?max_scan=200" \
+  -H "accept: application/json"
+
+# Resetar o snapshot de um perfil e recomeçar a contagem agora
+curl -X GET "https://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/new-followers?reset_snapshot=true" \
+  -H "accept: application/json"
+```
+
+#### 11. Listar contas similares sugeridas
+```bash
+curl -X GET "https://instaloader.cleissoncardoso.com/api/v1/profiles/instagram/similar?limit=10" \
   -H "accept: application/json"
 ```
 
@@ -237,13 +249,24 @@ curl -G "http://instaloader.cleissoncardoso.com/api/v1/downloads/proxy" \
 
 ---
 
-### Sessão Opcional (Caso queira autenticar com Cookies para rotas restritas)
+### Sessão Opcional e Variáveis de Ambiente no Dokploy (`Environment`)
 
-Por padrão a API roda em **modo 100% público (sem login)**. Caso deseje habilitar rotas que o próprio Instagram bloqueia sem sessão (como stories privados ou lista completa de seguidores):
+Para contornar bloqueios de IP de VPS (datacenter) e habilitar a listagem nominal de seguidores (`new_followers`), configure na aba **Environment** do Dokploy:
+
+```env
+CF_WORKER_URL=https://seu-worker.seu-subdominio.workers.dev
+IG_SESSIONID=SEU_COOKIE_SESSIONID
+IG_DS_USER_ID=SEU_USER_ID_NUMERICO
+IG_CSRFTOKEN=SEU_CSRFTOKEN_OPCIONAL
+IG_MID=SEU_MID_OPCIONAL
+IG_DID=SEU_IG_DID_OPCIONAL
+```
+
+Você também pode enviar ou atualizar os cookies via endpoint HTTP (eles ficam salvos em `/app/downloads/.session_cookies.json`):
 
 ```bash
 # Carregar cookies de sessão
-curl -X POST "http://instaloader.cleissoncardoso.com/api/v1/session/cookies" \
+curl -X POST "https://instaloader.cleissoncardoso.com/api/v1/session/cookies" \
   -H "accept: application/json" \
   -H "Content-Type: application/json" \
   -d '{
@@ -258,7 +281,7 @@ curl -X POST "http://instaloader.cleissoncardoso.com/api/v1/session/cookies" \
   }'
 
 # Resetar de volta para o modo 100% público/anônimo
-curl -X POST "http://instaloader.cleissoncardoso.com/api/v1/session/reset" \
+curl -X POST "https://instaloader.cleissoncardoso.com/api/v1/session/reset" \
   -H "accept: application/json"
 ```
 
