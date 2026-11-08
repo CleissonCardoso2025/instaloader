@@ -13,7 +13,7 @@ from base64 import b64encode
 from contextlib import contextmanager, suppress
 from datetime import datetime, timedelta
 from functools import partial
-from typing import Any, Callable, Dict, Iterator, List, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import requests
 import requests.utils
@@ -885,6 +885,37 @@ class InstaloaderContext:
                 data = []
         return data
 
+    def _fetch_via_worker_or_direct(
+        self, url: str, agent: str
+    ) -> Tuple[int, str, str]:
+        """Fetch an Instagram URL via Cloudflare Worker relay (if CF_WORKER_URL is set) or directly."""
+        worker_url = os.environ.get('CF_WORKER_URL', '').strip()
+        worker_secret = os.environ.get('CF_WORKER_SECRET', '').strip()
+        if worker_url:
+            relay_headers: Dict[str, str] = {}
+            if worker_secret:
+                relay_headers['X-Relay-Secret'] = worker_secret
+            with suppress(requests.exceptions.RequestException):
+                with requests.Session() as relay_session:
+                    w_resp = relay_session.get(
+                        worker_url,
+                        params={'url': url, 'ua': agent},
+                        headers=relay_headers,
+                        timeout=self.request_timeout,
+                    )
+                if w_resp.status_code in (200, 404):
+                    final_url = w_resp.headers.get('X-Final-Url') or url
+                    return w_resp.status_code, final_url, w_resp.text
+
+        headers = {
+            'User-Agent': agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+        }
+        with requests.Session() as direct_session:
+            resp = direct_session.get(url, headers=headers, timeout=self.request_timeout)
+        return resp.status_code, resp.url, resp.text
+
     def get_crawler_html(self, path: str) -> str:
         """Fetch an Instagram page using link-preview crawler User-Agents that bypass VPS login walls."""
         url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
@@ -899,28 +930,22 @@ class InstaloaderContext:
         diag_notes: List[str] = []
         last_html = ''
         for agent in crawler_agents:
-            headers = {
-                'User-Agent': agent,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-            }
             try:
-                with requests.Session() as crawler_session:
-                    resp = crawler_session.get(url, headers=headers, timeout=self.request_timeout)
-                if resp.status_code == 404:
-                    raise QueryReturnedNotFoundException(self._response_error(resp))
+                status_code, final_url, text = self._fetch_via_worker_or_direct(url, agent)
+                if status_code == 404:
+                    raise QueryReturnedNotFoundException(f"404 Not Found: {url}")
                 has_meta = (
-                    'og:image' in resp.text
-                    or 'twitter:image' in resp.text
-                    or 'xig_polaris_media' in resp.text
+                    'og:image' in text
+                    or 'twitter:image' in text
+                    or 'xig_polaris_media' in text
                 )
                 diag_notes.append(
-                    f"{agent.split('/', maxsplit=1)[0]}:{resp.status_code}:len={len(resp.text)}:meta={has_meta}"
+                    f"{agent.split('/', maxsplit=1)[0]}:{status_code}:len={len(text)}:meta={has_meta}"
                 )
-                if resp.status_code == 200 and '/accounts/login' not in resp.url:
-                    last_html = resp.text
+                if status_code == 200 and '/accounts/login' not in final_url:
+                    last_html = text
                     if has_meta:
-                        return resp.text
+                        return text
             except requests.exceptions.RequestException as err:
                 diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         if last_html:
@@ -946,27 +971,21 @@ class InstaloaderContext:
         diag_notes: List[str] = []
         for url in urls:
             for agent in agents:
-                headers = {
-                    'User-Agent': agent,
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                }
                 try:
-                    with requests.Session() as clean_session:
-                        resp = clean_session.get(url, headers=headers, timeout=self.request_timeout)
-                    if resp.status_code == 404:
-                        raise QueryReturnedNotFoundException(self._response_error(resp))
+                    status_code, _, text = self._fetch_via_worker_or_direct(url, agent)
+                    if status_code == 404:
+                        raise QueryReturnedNotFoundException(f"404 Not Found: {url}")
                     has_embed = (
-                        'EmbeddedMediaImage' in resp.text
-                        or '"contextJSON":"' in resp.text
-                        or 'XPolarisEmbedPostController' in resp.text
-                        or 'shortcode_media' in resp.text
+                        'EmbeddedMediaImage' in text
+                        or '"contextJSON":"' in text
+                        or 'XPolarisEmbedPostController' in text
+                        or 'shortcode_media' in text
                     )
                     diag_notes.append(
-                        f"{agent.split('/', maxsplit=1)[0]}:{resp.status_code}:len={len(resp.text)}:embed={has_embed}"
+                        f"{agent.split('/', maxsplit=1)[0]}:{status_code}:len={len(text)}:embed={has_embed}"
                     )
-                    if resp.status_code == 200 and has_embed:
-                        return resp.text
+                    if status_code == 200 and has_embed:
+                        return text
                 except requests.exceptions.RequestException as err:
                     diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         raise ConnectionException("Embed request failed ({})".format(", ".join(diag_notes)))

@@ -1,5 +1,7 @@
 """Camada de serviço que gerencia o Instaloader e executa as operações de scraping."""
 
+from contextlib import suppress
+import json
 import os
 import re
 from datetime import datetime, timezone
@@ -142,7 +144,9 @@ class InstagramScraperService:
     def __init__(self, download_dir: str = "downloads") -> None:
         self.download_dir = Path(download_dir).resolve()
         self.download_dir.mkdir(parents=True, exist_ok=True)
+        self.session_file = self.download_dir / ".session_cookies.json"
         self.loader = self._create_loader()
+        self._load_initial_session()
 
     def _create_loader(self) -> Instaloader:
         return Instaloader(
@@ -162,6 +166,28 @@ class InstagramScraperService:
             sanitize_paths=True,
         )
 
+    def _load_initial_session(self) -> None:
+        """Carrega sessão automaticamente via variáveis de ambiente (IG_SESSIONID) ou arquivo persistido."""
+        env_sessionid = os.environ.get("IG_SESSIONID", "").strip()
+        if env_sessionid:
+            env_user = os.environ.get("IG_USERNAME", "instagram_user").strip().lower()
+            cookies = {"sessionid": env_sessionid}
+            if os.environ.get("IG_CSRFTOKEN"):
+                cookies["csrftoken"] = os.environ["IG_CSRFTOKEN"].strip()
+            if os.environ.get("IG_DS_USER_ID"):
+                cookies["ds_user_id"] = os.environ["IG_DS_USER_ID"].strip()
+            with suppress(Exception):
+                self.loader.load_session(env_user, cookies)
+            return
+
+        if self.session_file.exists():
+            with suppress(Exception):
+                saved = json.loads(self.session_file.read_text(encoding="utf-8"))
+                username = saved.get("username") or "instagram_user"
+                cookies = saved.get("cookies") or {}
+                if cookies.get("sessionid"):
+                    self.loader.load_session(username, cookies)
+
     def get_status(self) -> dict:
         return {
             "status": "ok",
@@ -172,7 +198,13 @@ class InstagramScraperService:
 
     def set_session_cookies(self, username: str, cookies: Dict[str, str]) -> dict:
         try:
-            self.loader.load_session(username.strip().lower(), cookies)
+            clean_user = username.strip().lower()
+            self.loader.load_session(clean_user, cookies)
+            with suppress(OSError):
+                self.session_file.write_text(
+                    json.dumps({"username": clean_user, "cookies": cookies}),
+                    encoding="utf-8",
+                )
             verified_user = self.loader.test_login()
             return {
                 "status": "ok",
@@ -196,6 +228,9 @@ class InstagramScraperService:
             return {}
 
     def reset_to_public_session(self) -> dict:
+        with suppress(OSError):
+            if self.session_file.exists():
+                self.session_file.unlink()
         self.loader.close()
         self.loader = self._create_loader()
         return self.get_status()
