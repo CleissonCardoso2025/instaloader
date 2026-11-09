@@ -1358,12 +1358,6 @@ class Profile:
                 for key, val in page_u.items():
                     if val is not None or key not in user:
                         user[key] = val
-        if not user.get("pk") or user.get("pk") == "0" or user.get("follower_count") is None:
-            v1_user = context.fetch_web_profile_info(username)
-            if v1_user:
-                for key, val in v1_user.items():
-                    if val is not None or key not in user:
-                        user[key] = val
         if not user.get("pk") or user.get("pk") == "0":
             embed_user = Profile._from_profile_embed(context, username)
             if embed_user:

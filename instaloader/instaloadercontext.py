@@ -852,39 +852,14 @@ class InstaloaderContext:
         page_url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
 
         # Fast real-time SSR fetch via GET (works with both simple and advanced Cloudflare Workers)
-        for fast_ua in (
-            'curl/8.5.0',
-            'Googlebot/2.1 (+http://www.google.com/bot.html)',
-            'Applebot/0.1 (+http://www.apple.com/go/applebot)',
-            (
-                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
-                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
-            ),
-        ):
-            with suppress(requests.exceptions.RequestException):
-                status_code, final_url, raw_html = self._fetch_via_worker_or_direct(page_url, fast_ua)
-                if status_code == 404:
-                    raise QueryReturnedNotFoundException(f"404 Not Found: {page_url}")
-                if status_code == 200 and '/accounts/login' not in final_url:
-                    data = _extract_from_html(raw_html)
-                    if data:
-                        return data
-
-        if not data and worker_url:
-            with suppress(requests.exceptions.RequestException):
-                status_code, final_url, raw_html = self.fetch_authenticated_via_worker_or_direct(
-                    page_url,
-                    extra_headers={
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                    },
-                )
-                if status_code == 200 and '/accounts/login' not in final_url:
-                    data = _extract_from_html(raw_html)
-                    if data:
-                        return data
+        with suppress(requests.exceptions.RequestException):
+            status_code, final_url, raw_html = self._fetch_via_worker_or_direct(page_url, 'curl/8.5.0')
+            if status_code == 404:
+                raise QueryReturnedNotFoundException(f"404 Not Found: {page_url}")
+            if status_code == 200 and '/accounts/login' not in final_url:
+                data = _extract_from_html(raw_html)
+                if data:
+                    return data
 
         if worker_url:
             return data
