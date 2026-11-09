@@ -121,6 +121,15 @@ def handle_instaloader_error(exc: Exception) -> None:
         exc, (BadCredentialsException, TwoFactorAuthRequiredException, LoginException)
     ):
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    if isinstance(exc, AbortDownloadException) or "checkpoint_required" in str(exc):
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "O Instagram solicitou uma verificação de segurança (checkpoint_required) para esta conta. "
+                "Abra o Instagram no seu navegador ou aplicativo no celular, confirme o aviso de segurança "
+                "('Fui eu' / verificação) e em seguida atualize o IG_SESSIONID."
+            ),
+        ) from exc
     if isinstance(exc, InvalidArgumentException):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if isinstance(
@@ -390,10 +399,16 @@ class InstagramScraperService:
             items, ok = self._scan_followers_list(profile, limit=limit)
             if ok:
                 return items
-            return [
-                serialize_profile_summary(p)
-                for p in islice(profile.get_followers(), limit)
-            ]
+            if not self.loader.context.is_logged_in:
+                raise LoginRequiredException("Login required to access followers list.")
+            try:
+                return [
+                    serialize_profile_summary(p)
+                    for p in islice(profile.get_followers(), limit)
+                ]
+            except (AbortDownloadException, QueryReturnedBadRequestException) as err:
+                handle_instaloader_error(err)
+                return []
         except HANDLED_EXCEPTIONS as exc:
             handle_instaloader_error(exc)
             raise
