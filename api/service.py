@@ -207,15 +207,16 @@ class InstagramScraperService:
         cf_supports_post = None
         session_diag = "not_configured"
         if self.loader.context.is_logged_in:
+            uid = os.environ.get("IG_DS_USER_ID", "25025320").strip() or "25025320"
             status_code, final_url, text = (
                 self.loader.context.fetch_authenticated_via_worker_or_direct(
-                    "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram",
+                    f"https://www.instagram.com/api/v1/friendships/{uid}/followers/?count=1",
                     extra_headers={"x-ig-app-id": "936619743392459"},
                 )
             )
             if worker_url:
                 cf_supports_post = status_code != 401 or "Instaloader" not in text
-            if status_code == 200 and '"user"' in text:
+            if status_code == 200 and '"users"' in text:
                 session_diag = "valid_active"
             elif "user_has_logged_out" in text or "/accounts/login" in final_url:
                 session_diag = f"expired_or_logged_out (HTTP {status_code})"
@@ -274,7 +275,11 @@ class InstagramScraperService:
         clean_username = username.strip().lstrip("@").lower()
         try:
             profile = Profile.from_username(self.loader.context, clean_username)
-            return serialize_profile_detail(profile)
+            detail = serialize_profile_detail(profile)
+            scanned, ok = self._scan_followers_list(profile, limit=200)
+            if ok and len(scanned) > (detail.followers or 0):
+                detail.followers = len(scanned)
+            return detail
         except HANDLED_EXCEPTIONS as exc:
             handle_instaloader_error(exc)
             raise
@@ -435,6 +440,8 @@ class InstagramScraperService:
             scanned_followers, who_available = self._scan_followers_list(
                 profile, limit=max_scan
             )
+            if who_available and len(scanned_followers) > current_count:
+                current_count = len(scanned_followers)
 
             current_map: Dict[str, dict] = {
                 str(f.userid or f.username): f.model_dump() for f in scanned_followers
