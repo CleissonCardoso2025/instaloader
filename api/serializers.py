@@ -3,7 +3,7 @@
 from itertools import islice
 from typing import Any, Callable, List, Optional
 
-from instaloader.exceptions import InstaloaderException
+from instaloader.exceptions import AbortDownloadException, InstaloaderException
 from instaloader.structures import (
     Hashtag,
     Highlight,
@@ -34,7 +34,14 @@ def _safe_get(getter: Callable[[], Any], default: Any = None) -> Any:
     """Executa um getter capturando exceções de login, chave ausente ou erro do Instaloader."""
     try:
         return getter()
-    except (InstaloaderException, KeyError, IndexError, TypeError, ValueError):
+    except (
+        InstaloaderException,
+        AbortDownloadException,
+        KeyError,
+        IndexError,
+        TypeError,
+        ValueError,
+    ):
         return default
 
 

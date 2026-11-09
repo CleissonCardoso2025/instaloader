@@ -1287,9 +1287,9 @@ class Profile:
         """
         node, page_user = cls._from_page(context, username)
         profile = cls(context, node)
-        if not context.is_logged_in:
-            # The page has all that a logged-out visitor sees, including the first posts for get_posts().
-            profile._page_user = page_user
+        profile._page_user = page_user
+        if not context.is_logged_in or 'edge_followed_by' in node:
+            # The page has all that a visitor sees, including follower_count and first posts.
             profile._has_full_metadata = True
         return profile
 
@@ -1463,7 +1463,7 @@ class Profile:
                 }
                 try:
                     data = self._context.doc_id_graphql_query('27937681195819736', variables)
-                except InstaloaderException:
+                except (InstaloaderException, AbortDownloadException):
                     data = None
                 if data is None:
                     if 'edge_followed_by' in self._node:

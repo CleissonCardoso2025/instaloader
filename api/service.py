@@ -14,6 +14,7 @@ from fastapi import HTTPException
 
 import instaloader
 from instaloader import (
+    AbortDownloadException,
     BadCredentialsException,
     BadResponseException,
     ConnectionException,
@@ -65,6 +66,7 @@ SHORTCODE_URL_REGEX = re.compile(
 
 HANDLED_EXCEPTIONS = (
     InstaloaderException,
+    AbortDownloadException,
     HTTPException,
     KeyError,
     ValueError,

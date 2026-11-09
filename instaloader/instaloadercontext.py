@@ -849,8 +849,28 @@ class InstaloaderContext:
 
         data: List[Dict[str, Any]] = []
         worker_url = os.environ.get('CF_WORKER_URL', '').strip()
-        worker_secret = os.environ.get('CF_WORKER_SECRET', '').strip()
         page_url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
+
+        # Fast real-time SSR fetch via GET (works with both simple and advanced Cloudflare Workers)
+        for fast_ua in (
+            'curl/8.5.0',
+            (
+                'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) '
+                'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1'
+            ),
+        ):
+            with suppress(requests.exceptions.RequestException):
+                status_code, final_url, raw_html = self._fetch_via_worker_or_direct(page_url, fast_ua)
+                if status_code == 404:
+                    raise QueryReturnedNotFoundException(f"404 Not Found: {page_url}")
+                if status_code == 200 and '/accounts/login' not in final_url:
+                    data = _extract_from_html(raw_html)
+                    if data:
+                        return data
+
+        if worker_url:
+            return data
+
         nav_headers = {
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -859,27 +879,6 @@ class InstaloaderContext:
             'Sec-Fetch-Site': 'none',
             'Upgrade-Insecure-Requests': '1',
         }
-
-        if worker_url:
-            relay_headers: Dict[str, str] = {'Content-Type': 'application/json'}
-            if worker_secret:
-                relay_headers['X-Relay-Secret'] = worker_secret
-            payload = {
-                'url': page_url,
-                'method': 'GET',
-                'ua': self.user_agent,
-                'headers': nav_headers,
-            }
-            with suppress(requests.exceptions.RequestException):
-                with requests.Session() as relay_session:
-                    w_resp = relay_session.post(
-                        worker_url,
-                        json=payload,
-                        headers=relay_headers,
-                        timeout=self.request_timeout,
-                    )
-                if w_resp.status_code == 200:
-                    data = _extract_from_html(w_resp.text)
 
         if not data:
             # Clean browser navigation session (no x-ig-app-id or expired sessionid cookies)
@@ -891,7 +890,7 @@ class InstaloaderContext:
                     )  # type: ignore
                     html = self._get_page(clean_session, path)
                 data = _extract_from_html(html)
-            except (LoginRequiredException, ConnectionException):
+            except (LoginRequiredException, ConnectionException, AbortDownloadException):
                 data = []
 
         if not data:
@@ -899,7 +898,7 @@ class InstaloaderContext:
                 with self.get_anonymous_session() as anonymous_session:
                     html = self._get_page(anonymous_session, path)
                 data = _extract_from_html(html)
-            except (LoginRequiredException, ConnectionException):
+            except (LoginRequiredException, ConnectionException, AbortDownloadException):
                 data = []
 
         if not data:
@@ -907,7 +906,7 @@ class InstaloaderContext:
             try:
                 crawler_html = self.get_crawler_html(path)
                 data = _extract_from_html(crawler_html)
-            except (LoginRequiredException, ConnectionException):
+            except (LoginRequiredException, ConnectionException, AbortDownloadException):
                 data = []
         return data
 
@@ -1082,10 +1081,16 @@ class InstaloaderContext:
                         timeout=self.request_timeout,
                     )
                 if w_resp.status_code in (200, 401, 403, 404):
+                    if (
+                        '"Instaloader CF Relay"' in w_resp.text
+                        or '"Instaloader Cloudflare Worker Relay"' in w_resp.text
+                    ):
+                        return 401, url, w_resp.text
                     final_url = w_resp.headers.get('X-Final-Url') or url
                     return w_resp.status_code, final_url, w_resp.text
+            return 502, url, ''
 
-        resp = self._session.get(url, headers=extra_headers or {}, timeout=self.request_timeout)
+        resp = self._session.get(url, headers=extra_headers or {})
         return resp.status_code, resp.url, resp.text
 
     def fetch_followers_v1(self, user_id: str, max_count: int = 200) -> List[Dict[str, Any]]:
