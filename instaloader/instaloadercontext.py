@@ -848,26 +848,49 @@ class InstaloaderContext:
             return extracted
 
         data: List[Dict[str, Any]] = []
-        if self.is_logged_in:
-            try:
-                status_code, _, auth_html = self._fetch_authenticated_via_worker_or_direct(
-                    'https://www.instagram.com/{0}'.format(path.lstrip('/')),
-                    extra_headers={
-                        'Accept': 'text/html',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                    },
-                )
-                if status_code == 200:
-                    data = _extract_from_html(auth_html)
-            except requests.exceptions.RequestException:
-                data = []
+        worker_url = os.environ.get('CF_WORKER_URL', '').strip()
+        worker_secret = os.environ.get('CF_WORKER_SECRET', '').strip()
+        page_url = 'https://www.instagram.com/{0}'.format(path.lstrip('/'))
+        nav_headers = {
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Upgrade-Insecure-Requests': '1',
+        }
 
-        if not data and os.environ.get('CF_WORKER_URL', '').strip():
+        if worker_url:
+            relay_headers: Dict[str, str] = {'Content-Type': 'application/json'}
+            if worker_secret:
+                relay_headers['X-Relay-Secret'] = worker_secret
+            payload = {
+                'url': page_url,
+                'method': 'GET',
+                'ua': self.user_agent,
+                'headers': nav_headers,
+            }
+            with suppress(requests.exceptions.RequestException):
+                with requests.Session() as relay_session:
+                    w_resp = relay_session.post(
+                        worker_url,
+                        json=payload,
+                        headers=relay_headers,
+                        timeout=self.request_timeout,
+                    )
+                if w_resp.status_code == 200:
+                    data = _extract_from_html(w_resp.text)
+
+        if not data:
+            # Clean browser navigation session (no x-ig-app-id or expired sessionid cookies)
             try:
-                crawler_html = self.get_crawler_html(path)
-                data = _extract_from_html(crawler_html)
+                with requests.Session() as clean_session:
+                    clean_session.headers.update({'User-Agent': self.user_agent, **nav_headers})
+                    clean_session.request = partial(
+                        clean_session.request, timeout=self.request_timeout
+                    )  # type: ignore
+                    html = self._get_page(clean_session, path)
+                data = _extract_from_html(html)
             except (LoginRequiredException, ConnectionException):
                 data = []
 
@@ -880,28 +903,7 @@ class InstaloaderContext:
                 data = []
 
         if not data:
-            # Fallback with a clean browser navigation session (no x-ig-app-id or empty sessionid cookies)
-            try:
-                with requests.Session() as clean_session:
-                    clean_session.headers.update({
-                        'User-Agent': self.user_agent,
-                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.9',
-                        'Sec-Fetch-Dest': 'document',
-                        'Sec-Fetch-Mode': 'navigate',
-                        'Sec-Fetch-Site': 'none',
-                        'Upgrade-Insecure-Requests': '1',
-                    })
-                    clean_session.request = partial(
-                        clean_session.request, timeout=self.request_timeout
-                    )  # type: ignore
-                    html = self._get_page(clean_session, path)
-                data = _extract_from_html(html)
-            except (LoginRequiredException, ConnectionException):
-                data = []
-
-        if not data:
-            # Fallback with crawler User-Agent (never redirected to login on VPS/datacenter IPs)
+            # Fallback with crawler User-Agent
             try:
                 crawler_html = self.get_crawler_html(path)
                 data = _extract_from_html(crawler_html)

@@ -1348,20 +1348,15 @@ class Profile:
     def _from_page(context: InstaloaderContext, username: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """Return the node of a profile and the user data that its page embeds."""
         user: Dict[str, Any] = {}
-        if os.environ.get("CF_WORKER_URL", "").strip():
-            embed_user = Profile._from_profile_embed(context, username)
-            if embed_user:
-                user.update(embed_user)
+        try:
+            page = context.get_page_data("{0}/".format(username.lower()))
+        except QueryReturnedNotFoundException:
+            page = []
+        for data in page:
+            page_u = data.get("xig_user_by_username") or {}
+            if isinstance(page_u, dict) and page_u:
+                user.update(page_u)
         if not user.get("pk") or user.get("pk") == "0":
-            try:
-                page = context.get_page_data("{0}/".format(username.lower()))
-            except QueryReturnedNotFoundException:
-                page = []
-            for data in page:
-                page_u = data.get("xig_user_by_username") or {}
-                if isinstance(page_u, dict) and page_u:
-                    user.update(page_u)
-        if not user.get("pk"):
             embed_user = Profile._from_profile_embed(context, username)
             if embed_user:
                 user.update(embed_user)
