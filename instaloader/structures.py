@@ -1355,11 +1355,21 @@ class Profile:
         for data in page:
             page_u = data.get("xig_user_by_username") or {}
             if isinstance(page_u, dict) and page_u:
-                user.update(page_u)
+                for key, val in page_u.items():
+                    if val is not None or key not in user:
+                        user[key] = val
+        if not user.get("pk") or user.get("pk") == "0" or user.get("follower_count") is None:
+            v1_user = context.fetch_web_profile_info(username)
+            if v1_user:
+                for key, val in v1_user.items():
+                    if val is not None or key not in user:
+                        user[key] = val
         if not user.get("pk") or user.get("pk") == "0":
             embed_user = Profile._from_profile_embed(context, username)
             if embed_user:
-                user.update(embed_user)
+                for key, val in embed_user.items():
+                    if val is not None or key not in user:
+                        user[key] = val
         if not user.get("pk"):
             raise ProfileNotExistsException("Profile {} does not exist.".format(username))
         # The page's "id" is not the user ID, which is "pk".
