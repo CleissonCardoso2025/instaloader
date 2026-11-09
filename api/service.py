@@ -203,11 +203,32 @@ class InstagramScraperService:
                     self.loader.load_session(username, cookies)
 
     def get_status(self) -> dict:
+        worker_url = os.environ.get("CF_WORKER_URL", "").strip()
+        cf_supports_post = None
+        session_diag = "not_configured"
+        if self.loader.context.is_logged_in:
+            status_code, final_url, text = (
+                self.loader.context.fetch_authenticated_via_worker_or_direct(
+                    "https://www.instagram.com/api/v1/users/web_profile_info/?username=instagram",
+                    extra_headers={"x-ig-app-id": "936619743392459"},
+                )
+            )
+            if worker_url:
+                cf_supports_post = status_code != 401 or "Instaloader" not in text
+            if status_code == 200 and '"user"' in text:
+                session_diag = "valid_active"
+            elif "user_has_logged_out" in text or "/accounts/login" in final_url:
+                session_diag = f"expired_or_logged_out (HTTP {status_code})"
+            else:
+                session_diag = f"http_{status_code}: {text[:120]}"
         return {
             "status": "ok",
             "instaloader_version": instaloader.__version__,
             "is_logged_in": self.loader.context.is_logged_in,
             "logged_username": self.loader.context.username,
+            "cf_worker_configured": bool(worker_url),
+            "cf_worker_supports_post": cf_supports_post,
+            "session_status": session_diag,
         }
 
     def set_session_cookies(self, username: str, cookies: Dict[str, str]) -> dict:

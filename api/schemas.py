@@ -13,6 +13,15 @@ class HealthResponse(BaseModel):
     logged_username: Optional[str] = Field(
         None, description="Usuário autenticado (se houver)"
     )
+    cf_worker_configured: Optional[bool] = Field(
+        None, description="Se CF_WORKER_URL está configurado no ambiente"
+    )
+    cf_worker_supports_post: Optional[bool] = Field(
+        None, description="Se o Cloudflare Worker suporta requisições POST com cookies/headers"
+    )
+    session_status: Optional[str] = Field(
+        None, description="Diagnóstico da sessão IG_SESSIONID no Instagram"
+    )
 
 
 class LocationSchema(BaseModel):

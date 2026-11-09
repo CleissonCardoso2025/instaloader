@@ -872,7 +872,7 @@ class InstaloaderContext:
 
         if not data and worker_url:
             with suppress(requests.exceptions.RequestException):
-                status_code, final_url, raw_html = self._fetch_authenticated_via_worker_or_direct(
+                status_code, final_url, raw_html = self.fetch_authenticated_via_worker_or_direct(
                     page_url,
                     extra_headers={
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1057,7 +1057,7 @@ class InstaloaderContext:
                 diag_notes.append(f"{agent.split('/', maxsplit=1)[0]}:err={err}")
         raise ConnectionException("Profile embed request failed ({})".format(", ".join(diag_notes)))
 
-    def _fetch_authenticated_via_worker_or_direct(
+    def fetch_authenticated_via_worker_or_direct(
         self, url: str, extra_headers: Optional[Dict[str, str]] = None
     ) -> Tuple[int, str, str]:
         """Fetch an Instagram URL with current session cookies via Cloudflare Worker POST or direct."""
@@ -1116,7 +1116,7 @@ class InstaloaderContext:
         clean_user = username.strip().lstrip('@').lower()
         url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={urllib.parse.quote(clean_user)}"
         try:
-            status_code, _, text = self._fetch_authenticated_via_worker_or_direct(
+            status_code, _, text = self.fetch_authenticated_via_worker_or_direct(
                 url,
                 extra_headers={'x-ig-app-id': '936619743392459'},
             )
@@ -1143,7 +1143,7 @@ class InstaloaderContext:
             if next_max_id:
                 url += f"&max_id={urllib.parse.quote(str(next_max_id))}"
             try:
-                status_code, _, text = self._fetch_authenticated_via_worker_or_direct(
+                status_code, _, text = self.fetch_authenticated_via_worker_or_direct(
                     url,
                     extra_headers={'x-ig-app-id': '936619743392459'},
                 )
