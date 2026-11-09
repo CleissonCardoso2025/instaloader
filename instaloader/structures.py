@@ -679,7 +679,7 @@ class Post:
     def _obtain_metadata(self):
         if not self._full_metadata_dict:
             diag: List[str] = []
-            if not self._context.is_logged_in and os.environ.get('CF_WORKER_URL', '').strip():
+            if os.environ.get('CF_WORKER_URL', '').strip():
                 self._full_metadata_dict = (
                     self._obtain_metadata_from_embed(diag=diag)
                     or self._obtain_metadata_from_opengraph(diag=diag)
@@ -700,7 +700,7 @@ class Post:
                     items = web_info.get("items")
                     if not items:
                         diag.append(f"gql_empty(keys={list((resp.get('data') or {}).keys())})")
-                except (InstaloaderException, KeyError, ValueError, TypeError) as err:
+                except (InstaloaderException, AbortDownloadException, KeyError, ValueError, TypeError) as err:
                     diag.append(f"gql_err={err}")
                 if items:
                     self._full_metadata_dict = Post._normalize_post_data(items[0])
